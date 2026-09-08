@@ -5,13 +5,13 @@
 # <div align="center">TeamSpeak 3 Server Guard</div>
 
 <div align="center">
-  <strong>AstrBot TeamSpeak 3 多服务器监控插件（AI 修改版 · v3.1.0）</strong>
+  <strong>AstrBot TeamSpeak 3 多服务器监控插件（AI 修改版 · v3.1.1）</strong>
 </div>
 
 <br>
 
 <div align="center">
-  <a href="CHANGELOG.md"><img src="https://img.shields.io/badge/version-v3.1.0-9644F4?style=for-the-badge" alt="Version"></a>
+  <a href="CHANGELOG.md"><img src="https://img.shields.io/badge/version-v3.1.1-9644F4?style=for-the-badge" alt="Version"></a>
   <a href="LICENSE"><img src="https://img.shields.io/badge/license-AGPL--3.0-E53935?style=for-the-badge" alt="License"></a>
   <a href="https://www.python.org/downloads/"><img src="https://img.shields.io/badge/Python-3.10+-3776AB?style=for-the-badge&logo=python&logoColor=white" alt="Python"></a>
   <a href="https://github.com/AstrBotDevs/AstrBot"><img src="https://img.shields.io/badge/AstrBot-Compatible-00BFA5?style=for-the-badge&logo=robot&logoColor=white" alt="AstrBot Compatible"></a>
@@ -45,7 +45,7 @@
 - 上下线通知滞回判定（连续失败采样确认，避免防洪/抖动误报）；
 - 单轮询单连接，消除同秒双连接触发的 TS3 防洪；失联自动降频；
 - 修复插件重载可能残留僵尸监控任务的问题；
-- 推送目标支持 UMO（`/推送目标 <UMO|群号|本群>`），可动态切换推送群；
+- 推送目标支持 UMO（`/ts推送目标 <UMO|群号|本群>`），可动态切换推送群；
 - 通知开关拆分：`enable_status_push`（上下线切换）与 `enable_startup_notify`（监控启动）相互独立；
 - 移除定时通知（`enable_periodic_report`）与 `status_interval` 相关配置。
 
@@ -62,12 +62,12 @@ v2.0.0 起架构仿造 [`astrbot_plugin_minecraft_multi_monitor`](https://github
 模块化拆包、统一的 `display_options` 开关、`template_list` 配置、单一目标群推送。
 
 v3.0.0 起为稳定性与 UMO 特性（AI 修改版）：
-- 推送目标支持 **UMO**（`atri:GroupMessage:1092815819`），聊天里用 `/推送目标 <UMO>` 即可动态设置/切换，无需改 WebUI；
+- 推送目标支持 **UMO**（`atri:GroupMessage:1092815819`），聊天里用 `/ts推送目标 <UMO>` 即可动态设置/切换，无需改 WebUI；
 - 上下线通知带**滞回确认**，单次防洪 / 断网抖动不再误报“已离线/已上线”；
 - 每个轮询节拍只建一条 ServerQuery 连接（消除每小时状态检查与 15s 用户轮询
   同秒双连接触发的 TS3 防洪），失败自动降频；修复插件重载可能残留僵尸监控任务的问题。
 
-v3.1.0（本轮改动，AI 修改版）：
+v3.1.1（本轮改动，AI 修改版）：
 - **开关拆分**：`enable_status_push`（上线/下线切换通知）与新增的 `enable_startup_notify`
   （“监控已启动”通知，默认关）互相独立，可分别开关；
 - **定时通知已删除**：移除 `enable_periodic_report`（定期状态快照）与
@@ -80,12 +80,12 @@ v3.1.0（本轮改动，AI 修改版）：
 
 - **多服务器监控**：同时监控多台 TS3 服务器，互不干扰
 - **用户进出检测**：默认每 15 秒轮询 clientlist，diff 出新加入 / 离开的用户（带防抖）
-- **上下线 / 启动通知独立开关（v3.1.0）**：`enable_status_push` 控制服务器 上线 / 下线 切换通知；
+- **上下线 / 启动通知独立开关（v3.1.1）**：`enable_status_push` 控制服务器 上线 / 下线 切换通知；
   `enable_startup_notify` 单独控制「监控已启动」通知（默认关），互不影响
-- **已移除定时通知（v3.1.0）**：不再有定期状态快照
+- **已移除定时通知（v3.1.1）**：不再有定期状态快照
 - **可配置展示项**：通过 `display_options` 控制通知里展示哪些栏目
 - **自动启动 / 手动控制**：`enable_auto_monitor` 配置项控制插件加载后是否自动启动监控循环
-- **UMO 动态推送目标**：`/推送目标 <UMO|群号|本群>` 聊天内即可设置/切换/清除推送目标，无需改 WebUI（持久化）
+- **UMO 动态推送目标**：`/ts推送目标 <UMO|群号|本群>` 聊天内即可设置/切换/清除推送目标，无需改 WebUI（持久化）
 - **上下线滞回判定（v3）**：连续失败采样确认后才报“已离线”，避免防洪 / 抖动误报
 - **数据持久化**：服务器配置由 AstrBot 面板管理；推送目标运行时设置存 `plugin_data`，重启 / 重载不丢失
 
@@ -200,13 +200,13 @@ TS3 服务器状态
 
 | 命令 | 说明 |
 | --- | --- |
-| `/查询` | 立即拉取所有启用服务器的状态（不推送群，只在私聊 / 群聊里返回文本） |
-| `/推送目标` | 查看当前推送目标与用法 |
-| `/推送目标 <UMO>` | 按 UMO 设置推送目标，如 `/推送目标 atri:GroupMessage:1092815819`，并发送测试消息 |
-| `/推送目标 <QQ群号>` | 兼容旧版：按纯数字群号设置（如 `/推送目标 123456789`） |
-| `/推送目标 本群` | 把当前会话（群/私聊）设为推送目标 |
-| `/推送目标 清除` | 清除聊天下令设置，恢复使用 WebUI 面板的 `target_umo` / `target_group` |
-| `/推送测试` | 向当前生效目标发送一条测试消息 |
+| `/ts查询` | 立即拉取所有启用服务器的状态（不推送群，只在私聊 / 群聊里返回文本） |
+| `/ts推送目标` | 查看当前推送目标与用法 |
+| `/ts推送目标 <UMO>` | 按 UMO 设置推送目标，如 `/ts推送目标 atri:GroupMessage:1092815819`，并发送测试消息 |
+| `/ts推送目标 <QQ群号>` | 兼容旧版：按纯数字群号设置（如 `/ts推送目标 123456789`） |
+| `/ts推送目标 本群` | 把当前会话（群/私聊）设为推送目标 |
+| `/ts推送目标 清除` | 清除聊天下令设置，恢复使用 WebUI 面板的 `target_umo` / `target_group` |
+| `/ts推送测试` | 向当前生效目标发送一条测试消息 |
 
 推送目标生效优先级：**聊天下令设置（持久化） > WebUI `target_umo` > WebUI `target_group`**。
 服务器增删改、监控启动 / 停止、显示项配置等仍走 WebUI。
@@ -260,18 +260,18 @@ pip install -r /AstrBot/data/plugins/astrbot_plugin_ts3_server_guard/requirement
 
 请检查：
 
-- 用 `/推送目标` 查看当前生效目标；`target_group` 必须是纯数字的群号，`target_umo` 需形如 `atri:GroupMessage:1092815819`
+- 用 `/ts推送目标` 查看当前生效目标；`target_group` 必须是纯数字的群号，`target_umo` 需形如 `atri:GroupMessage:1092815819`
 - AstrBot 必须已连接到目标平台（NapCat / 官方机器人 / 其它），机器人必须在目标群内且未被禁言
-- 使用 `/推送测试` 直接验证；失败时查看 AstrBot 日志中的具体报错
+- 使用 `/ts推送测试` 直接验证；失败时查看 AstrBot 日志中的具体报错
 - 注意：部分平台可能不支持“主动消息”，此时只能把推送目标设在机器人能收到消息的会话
 
 ### Q: 如何用 UMO 设置推送群？
 
 管理员在任意会话输入：
 
-- `/推送目标 atri:GroupMessage:1092815819` —— 按完整 UMO 设置（推荐）
-- `/推送目标 本群` —— 在目标群里直接绑定当前会话
-- `/推送目标 123456789` —— 兼容旧版纯群号
+- `/ts推送目标 atri:GroupMessage:1092815819` —— 按完整 UMO 设置（推荐）
+- `/ts推送目标 本群` —— 在目标群里直接绑定当前会话
+- `/ts推送目标 123456789` —— 兼容旧版纯群号
 
 设置后插件会自动向新目标发送一条测试消息确认可达；目标会持久化，插件重载 / AstrBot 重启后仍生效。
 
@@ -279,7 +279,7 @@ pip install -r /AstrBot/data/plugins/astrbot_plugin_ts3_server_guard/requirement
 
 这是 v2.x 的老问题：单次 ServerQuery 拉取失败（例如 TS3 防洪 error id 524、瞬时断网）会被直接当成服务器离线。
 v3.0.0 起上下线判定带滞回——需**连续 3 次**失败采样才报“已离线”，恢复在线也需连续 2 次成功采样；
-v3.1.0 起不再有独立的每小时状态轮询（定时通知已移除），每个轮询节拍只建一条连接。
+v3.1.1 起不再有独立的每小时状态轮询（定时通知已移除），每个轮询节拍只建一条连接。
 若仍频繁出现，请把 AstrBot 所在机器 IP 加入 TS3 `query_ip_allowlist.txt`（修改后**重启 TS3 服务**才生效），并适当调大
 `global_join_leave_interval`。
 
