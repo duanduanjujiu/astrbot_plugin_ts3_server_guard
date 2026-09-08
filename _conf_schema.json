@@ -1,0 +1,171 @@
+{
+  "target_group": {
+    "description": "接收通知的QQ群号",
+    "type": "string",
+    "hint": "只支持一个群统一接收所有服务器通知，例如 123456789。留空时若下方 target_umo 有值则优先使用 UMO。",
+    "default": ""
+  },
+  "target_umo": {
+    "description": "推送目标 UMO（可选，优先于 target_group）",
+    "type": "string",
+    "hint": "AstrBot 会话唯一标识，形如 atri:GroupMessage:1092815819（平台实例名:消息类型:会话ID）。可在 WebUI/日志中获取，或用 /推送目标 本群 绑定当前会话。留空回退到 target_group。",
+    "default": ""
+  },
+  "global_join_leave_interval": {
+    "description": "全局默认用户进出检测间隔（秒，最小 5）",
+    "type": "int",
+    "default": 15,
+    "hint": "每台服务器按此频率轮询 clientlist，diff 出新加入/离开的用户。上下线切换也复用此采样节奏。建议 10-30 秒。⚠️ 务必把 AstrBot IP 加进 TS3 query_ip_allowlist.txt，否则会被防洪拦截。"
+  },
+  "global_join_leave_debounce": {
+    "description": "全局默认用户进出防抖时长（秒）",
+    "type": "float",
+    "default": 3,
+    "hint": "疑似 join/leave 必须在该时长内被再次观测到才被确认为有效；否则视为网络抖动丢弃。建议 2-5 秒。"
+  },
+  "enable_auto_monitor": {
+    "description": "插件加载后自动启动监控",
+    "type": "bool",
+    "default": true
+  },
+  "enable_status_push": {
+    "description": "推送服务器上线/下线切换通知",
+    "type": "bool",
+    "default": true,
+    "hint": "服务器状态发生 上线 / 下线 切换时推送通知（需连续多次探测确认，避免抖动误报）。与“监控启动通知”互相独立。"
+  },
+  "enable_startup_notify": {
+    "description": "推送监控启动通知",
+    "type": "bool",
+    "default": false,
+    "hint": "开启后，每次监控启动（插件加载/手动启动）且服务器在线时，推送一次「监控已启动」消息。默认关闭以减少噪音。"
+  },
+  "display_options": {
+    "description": "消息展示项开关",
+    "type": "object",
+    "hint": "控制手动查询和自动通知中显示哪些栏目。",
+    "items": {
+      "show_server_name": {
+        "description": "展示服务器名称",
+        "type": "bool",
+        "default": true
+      },
+      "show_server_address": {
+        "description": "展示服务器地址",
+        "type": "bool",
+        "default": false
+      },
+      "show_server_platform": {
+        "description": "展示服务器平台",
+        "type": "bool",
+        "default": true
+      },
+      "show_server_version": {
+        "description": "展示服务器版本",
+        "type": "bool",
+        "default": false
+      },
+      "show_online_clients": {
+        "description": "展示在线人数",
+        "type": "bool",
+        "default": true
+      },
+      "show_channels": {
+        "description": "展示频道数",
+        "type": "bool",
+        "default": true
+      },
+      "show_uptime": {
+        "description": "展示运行时间",
+        "type": "bool",
+        "default": true
+      },
+      "show_client_list": {
+        "description": "展示在线用户列表",
+        "type": "bool",
+        "default": false
+      },
+      "show_update_time": {
+        "description": "展示更新时间",
+        "type": "bool",
+        "default": true
+      }
+    },
+    "default": {
+      "show_server_name": true,
+      "show_server_address": false,
+      "show_server_platform": true,
+      "show_server_version": false,
+      "show_online_clients": true,
+      "show_channels": true,
+      "show_uptime": true,
+      "show_client_list": false,
+      "show_update_time": true
+    }
+  },
+  "server_entries": {
+    "description": "TS3 服务器列表",
+    "type": "template_list",
+    "hint": "每一项是一台 TS3 服务器。",
+    "templates": {
+      "ts_server": {
+        "name": "TS3 服务器",
+        "hint": "添加一台需要监控的 TeamSpeak 3 服务器。",
+        "items": {
+          "alias": {
+            "description": "服务器唯一标识",
+            "type": "string",
+            "hint": "建议填写英文字母、数字或下划线，例如 ts_main。",
+            "default": ""
+          },
+          "display_name": {
+            "description": "显示名称",
+            "type": "string",
+            "hint": "通知消息里展示的名字；留空时回退到 alias。",
+            "default": ""
+          },
+          "enabled": {
+            "description": "启用该服务器监控",
+            "type": "bool",
+            "default": true
+          },
+          "host": {
+            "description": "服务器地址",
+            "type": "string",
+            "hint": "IP 或域名，例如 192.168.1.100 或 ts.example.com。",
+            "default": ""
+          },
+          "query_port": {
+            "description": "ServerQuery 端口",
+            "type": "int",
+            "default": 10011,
+            "hint": "填 0 或留空时使用全局默认 10011。"
+          },
+          "query_user": {
+            "description": "ServerQuery 用户名",
+            "type": "string",
+            "default": ""
+          },
+          "query_password": {
+            "description": "ServerQuery 密码",
+            "type": "string",
+            "hint": "明文存储，建议只授予必要权限。",
+            "default": ""
+          },
+          "virtual_server_id": {
+            "description": "虚拟服务器 ID",
+            "type": "int",
+            "default": 1
+          },
+          "join_leave_interval": {
+            "description": "单服务器用户进出检测间隔（秒，最小 5）",
+            "type": "int",
+            "default": 0,
+            "hint": "填 0 或负数时回退到 global_join_leave_interval；小于 5 会被强制为 5。"
+          }
+        }
+      }
+    },
+    "default": []
+  }
+}

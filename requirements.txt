@@ -1,0 +1,10 @@
+# TeamSpeak 3 多服务器监控插件 运行依赖
+#
+# 升级 / 重建 AstrBot（例如更换 soulter/astrbot 镜像后）若依赖丢失，
+# 在 AstrBot 容器内执行一次：
+#   pip install -r /AstrBot/data/plugins/astrbot_plugin_ts3_server_guard/requirements.txt
+# 或通过 AstrBot WebUI 重新安装 / 重载本插件触发自动安装。
+
+# ServerQuery 协议客户端库（py-ts3）。代码在 ts_server_monitor/clients.py 中按需 import ts3。
+# PyPI 上 ts3 的最新版本为 1.0.11。
+ts3>=1.0.11,<2
