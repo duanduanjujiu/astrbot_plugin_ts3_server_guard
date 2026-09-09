@@ -45,7 +45,7 @@
 - 上下线通知滞回判定（连续失败采样确认，避免防洪/抖动误报）；
 - 单轮询单连接，消除同秒双连接触发的 TS3 防洪；失联自动降频；
 - 修复插件重载可能残留僵尸监控任务的问题；
-- 推送目标支持 UMO（`/ts推送目标 <UMO|群号|本群>`），可动态切换推送群；
+- 推送目标支持 UMO（`/ts_push_target <UMO|群号|本群>`），可动态切换推送群；
 - 通知开关拆分：`enable_status_push`（上下线切换）与 `enable_startup_notify`（监控启动）相互独立；
 - 移除定时通知（`enable_periodic_report`）与 `status_interval` 相关配置。
 
@@ -62,7 +62,7 @@ v2.0.0 起架构仿造 [`astrbot_plugin_minecraft_multi_monitor`](https://github
 模块化拆包、统一的 `display_options` 开关、`template_list` 配置、单一目标群推送。
 
 v3.0.0 起为稳定性与 UMO 特性（AI 修改版）：
-- 推送目标支持 **UMO**（`atri:GroupMessage:1092815819`），聊天里用 `/ts推送目标 <UMO>` 即可动态设置/切换，无需改 WebUI；
+- 推送目标支持 **UMO**（`atri:GroupMessage:1092815819`），聊天里用 `/ts_push_target <UMO>` 即可动态设置/切换，无需改 WebUI；
 - 上下线通知带**滞回确认**，单次防洪 / 断网抖动不再误报“已离线/已上线”；
 - 每个轮询节拍只建一条 ServerQuery 连接（消除每小时状态检查与 15s 用户轮询
   同秒双连接触发的 TS3 防洪），失败自动降频；修复插件重载可能残留僵尸监控任务的问题。
@@ -85,7 +85,7 @@ v3.1.1（本轮改动，AI 修改版）：
 - **已移除定时通知（v3.1.1）**：不再有定期状态快照
 - **可配置展示项**：通过 `display_options` 控制通知里展示哪些栏目
 - **自动启动 / 手动控制**：`enable_auto_monitor` 配置项控制插件加载后是否自动启动监控循环
-- **UMO 动态推送目标**：`/ts推送目标 <UMO|群号|本群>` 聊天内即可设置/切换/清除推送目标，无需改 WebUI（持久化）
+- **UMO 动态推送目标**：`/ts_push_target <UMO|群号|本群>` 聊天内即可设置/切换/清除推送目标，无需改 WebUI（持久化）
 - **上下线滞回判定（v3）**：连续失败采样确认后才报“已离线”，避免防洪 / 抖动误报
 - **数据持久化**：服务器配置由 AstrBot 面板管理；推送目标运行时设置存 `plugin_data`，重启 / 重载不丢失
 
@@ -200,13 +200,13 @@ TS3 服务器状态
 
 | 命令 | 说明 |
 | --- | --- |
-| `/ts查询` | 立即拉取所有启用服务器的状态（不推送群，只在私聊 / 群聊里返回文本） |
-| `/ts推送目标` | 查看当前推送目标与用法 |
-| `/ts推送目标 <UMO>` | 按 UMO 设置推送目标，如 `/ts推送目标 atri:GroupMessage:1092815819`，并发送测试消息 |
-| `/ts推送目标 <QQ群号>` | 兼容旧版：按纯数字群号设置（如 `/ts推送目标 123456789`） |
-| `/ts推送目标 本群` | 把当前会话（群/私聊）设为推送目标 |
-| `/ts推送目标 清除` | 清除聊天下令设置，恢复使用 WebUI 面板的 `target_umo` / `target_group` |
-| `/ts推送测试` | 向当前生效目标发送一条测试消息 |
+| `/ts_query` | 立即拉取所有启用服务器的状态（不推送群，只在私聊 / 群聊里返回文本） |
+| `/ts_push_target` | 查看当前推送目标与用法（管理员） |
+| `/ts_push_target <UMO>` | 按 UMO 设置推送目标，如 `/ts_push_target atri:GroupMessage:1092815819`，并发送测试消息（管理员） |
+| `/ts_push_target <QQ群号>` | 兼容旧版：按纯数字群号设置（如 `/ts_push_target 123456789`）（管理员） |
+| `/ts_push_target 本群` | 把当前会话（群/私聊）设为推送目标（管理员） |
+| `/ts_push_target 清除` | 清除聊天下令设置，恢复使用 WebUI 面板的 `target_umo` / `target_group`（管理员） |
+| `/ts_push_test` | 向当前生效目标发送一条测试消息（管理员） |
 
 推送目标生效优先级：**聊天下令设置（持久化） > WebUI `target_umo` > WebUI `target_group`**。
 服务器增删改、监控启动 / 停止、显示项配置等仍走 WebUI。
@@ -260,18 +260,18 @@ pip install -r /AstrBot/data/plugins/astrbot_plugin_ts3_server_guard/requirement
 
 请检查：
 
-- 用 `/ts推送目标` 查看当前生效目标；`target_group` 必须是纯数字的群号，`target_umo` 需形如 `atri:GroupMessage:1092815819`
+- 用 `/ts_push_target` 查看当前生效目标；`target_group` 必须是纯数字的群号，`target_umo` 需形如 `atri:GroupMessage:1092815819`
 - AstrBot 必须已连接到目标平台（NapCat / 官方机器人 / 其它），机器人必须在目标群内且未被禁言
-- 使用 `/ts推送测试` 直接验证；失败时查看 AstrBot 日志中的具体报错
+- 使用 `/ts_push_test` 直接验证；失败时查看 AstrBot 日志中的具体报错
 - 注意：部分平台可能不支持“主动消息”，此时只能把推送目标设在机器人能收到消息的会话
 
 ### Q: 如何用 UMO 设置推送群？
 
 管理员在任意会话输入：
 
-- `/ts推送目标 atri:GroupMessage:1092815819` —— 按完整 UMO 设置（推荐）
-- `/ts推送目标 本群` —— 在目标群里直接绑定当前会话
-- `/ts推送目标 123456789` —— 兼容旧版纯群号
+- `/ts_push_target atri:GroupMessage:1092815819` —— 按完整 UMO 设置（推荐）
+- `/ts_push_target 本群` —— 在目标群里直接绑定当前会话
+- `/ts_push_target 123456789` —— 兼容旧版纯群号
 
 设置后插件会自动向新目标发送一条测试消息确认可达；目标会持久化，插件重载 / AstrBot 重启后仍生效。
 

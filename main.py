@@ -2,7 +2,7 @@
 
 v3.1.1（本轮改动）：
 - 聊天指令全部加 ``ts`` 前缀，避免与 astrbot_plugin_mc_server_guard 等插件的
-  同名指令冲突：``/ts查询``、``/ts推送目标``、``/ts推送测试``。
+  同名指令冲突：``/ts_query``、``/ts_push_target``、``/ts_push_test``。
 
 v3.1.0（通知开关拆分 + 删除定时通知）：
 - **通知开关拆分**：``enable_status_push``（服务器 上线/下线 切换通知）与
@@ -23,8 +23,8 @@ v3.0.0（稳定性与 UMO 推送目标）：
 - **连续失败降频**：服务器失联后用户轮询自动退避到 60s，减少无效连接与日志。
 - **生命周期竞态修复**：延迟自动启动任务被持有并在 terminate 取消，杜绝
   “插件重载后旧实例残留 monitor 循环 → 双份通知 / 双倍防洪”。
-- **推送目标支持 UMO**：``/ts推送目标 <UMO>``（如 ``atri:GroupMessage:1092815819``）
-  或 ``/ts推送目标 <QQ群号>``、``/ts推送目标 本群``、``/ts推送目标 清除``；
+- **推送目标支持 UMO**：``/ts_push_target <UMO>``（如 ``atri:GroupMessage:1092815819``）
+  或 ``/ts_push_target <QQ群号>``、``/ts_push_target 本群``、``/ts_push_target 清除``；
   聊天下令设置的目标持久化于 ``data/plugin_data/.../relay_state.json``，
   优先级高于 WebUI 面板的 ``target_umo`` / ``target_group``。
 - 发送统一走 ``context.send_message(umo, ...)``（官方主动消息 API）；
@@ -123,7 +123,7 @@ class MyPlugin(Star):
         )
 
         # 只要配置了服务器就自动启动监控：推送目标可在运行期用
-        # /ts推送目标 <UMO|群号> 动态设置，无需再要求配置里先填好群号。
+        # /ts_push_target <UMO|群号> 动态设置，无需再要求配置里先填好群号。
         if self.settings.enable_auto_monitor and self.servers:
             self._delayed_start_task = asyncio.create_task(self._delayed_auto_start())
 
@@ -434,14 +434,14 @@ class MyPlugin(Star):
     # 聊天命令
     # ------------------------------------------------------------------
 
-    @filter.command("ts查询")
+    @filter.command("ts_query")
     async def query_server_status(self, event: AstrMessageEvent):
         """立即拉取所有启用服务器的状态（不推送群，只在当前会话返回文本）。"""
         text = await self.get_all_server_status_text()
         yield event.plain_result(text)
 
     @filter.permission_type(filter.PermissionType.ADMIN)
-    @filter.command("ts推送目标")
+    @filter.command("ts_push_target")
     async def set_push_target(self, event: AstrMessageEvent):
         """查看 / 设置通知推送目标。支持输入 UMO 或 QQ 群号。"""
         rest = _command_rest(event)
@@ -467,7 +467,7 @@ class MyPlugin(Star):
             if not umo:
                 yield event.plain_result(
                     "❌ 无法获取当前会话的 UMO（该平台可能不支持主动消息），"
-                    "请改用 /ts推送目标 <UMO> 手动指定。"
+                    "请改用 /ts_push_target <UMO> 手动指定。"
                 )
                 return
             save_runtime_target(umo=umo)
@@ -499,7 +499,7 @@ class MyPlugin(Star):
         )
 
     @filter.permission_type(filter.PermissionType.ADMIN)
-    @filter.command("ts推送测试")
+    @filter.command("ts_push_test")
     async def push_test(self, event: AstrMessageEvent):
         """向当前推送目标发送一条测试消息。"""
         umo = self._effective_umo()
@@ -507,7 +507,7 @@ class MyPlugin(Star):
         if not umo and not group_id:
             yield event.plain_result(
                 "❌ 当前未配置推送目标。\n"
-                "请先使用 /ts推送目标 <UMO 或 QQ群号> 设置。"
+                "请先使用 /ts_push_target <UMO 或 QQ群号> 设置。"
             )
             return
         final_message = wrap_notice(
@@ -531,12 +531,12 @@ class MyPlugin(Star):
     def _target_usage_text(self) -> str:
         return (
             "【用法】（管理员）\n"
-            "/ts推送目标 <UMO>        按 UMO 设置，例如：\n"
-            "                        /ts推送目标 atri:GroupMessage:1092815819\n"
-            "/ts推送目标 <QQ群号>     兼容旧版纯群号，例如：/ts推送目标 123456789\n"
-            "/ts推送目标 本群         把当前会话设为推送目标\n"
-            "/ts推送目标 清除         恢复使用 WebUI 面板配置\n"
-            "/ts推送测试             向当前目标发送测试消息"
+            "/ts_push_target <UMO>        按 UMO 设置，例如：\n"
+            "                             /ts_push_target atri:GroupMessage:1092815819\n"
+            "/ts_push_target <QQ群号>     兼容旧版纯群号，例如：/ts_push_target 123456789\n"
+            "/ts_push_target 本群         把当前会话设为推送目标\n"
+            "/ts_push_target 清除         恢复使用 WebUI 面板配置\n"
+            "/ts_push_test                 向当前目标发送测试消息"
         )
 
     def _target_help_text(self) -> str:

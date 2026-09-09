@@ -63,7 +63,7 @@ def parse_umo(value: Any) -> str | None:
 
     AstrBot 的 UMO 形如 ``<平台实例名>:<消息类型>:<会话ID>``，例如
     ``atri:GroupMessage:1092815819``。只做宽松校验：至少两段非空、以冒号分隔。
-    详细的可达性校验交给 ``/ts推送目标`` 命令发送测试消息时完成。
+    详细的可达性校验交给 ``/ts_push_target`` 命令发送测试消息时完成。
     """
     if value is None:
         return None
@@ -140,7 +140,7 @@ def load_settings(config: AstrBotConfig) -> PluginSettings:
         target_group=parse_target_group(config.get("target_group")),
         target_umo=parse_umo(config.get("target_umo")),
         enable_auto_monitor=safe_bool(
-            config.get("enable_auto_monitor", False), False
+            config.get("enable_auto_monitor"), True
         ),
         global_join_leave_interval=global_join_leave_interval,
         global_join_leave_debounce=global_join_leave_debounce,
@@ -182,9 +182,7 @@ def load_servers_from_config(
     - ``query_port`` ≤ 0 回退到全局默认 ``10011``；
     - alias 为空时，根据 ``server_name`` 自动 slugify 一个 key。
     """
-    raw_servers = config.get("server_entries")
-    if raw_servers is None:
-        raw_servers = config.get("servers", [])  # 兼容旧版字段名
+    raw_servers = config.get("server_entries", [])
     if not isinstance(raw_servers, list):
         logger.warning("配置项 server_entries 不是列表，已忽略。")
         raw_servers = []
