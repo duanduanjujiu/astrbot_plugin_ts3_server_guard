@@ -89,7 +89,7 @@ def _command_rest(event: AstrMessageEvent) -> str:
     "astrbot_plugin_ts3_server_guard",
     "duanduanjujiu",
     "TeamSpeak 3 多服务器监控插件",
-    "3.2.0",
+    "3.2.1",
     repo="https://github.com/duanduanjujiu/astrbot_plugin_ts3_server_guard",
 )
 class MyPlugin(Star):

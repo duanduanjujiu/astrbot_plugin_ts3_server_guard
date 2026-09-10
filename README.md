@@ -5,13 +5,13 @@
 # <div align="center">TeamSpeak 3 Server Guard</div>
 
 <div align="center">
-  <strong>AstrBot TeamSpeak 3 多服务器监控插件（AI 修改版 · v3.2.0）</strong>
+  <strong>AstrBot TeamSpeak 3 多服务器监控插件（AI 修改版 · v3.2.1）</strong>
 </div>
 
 <br>
 
 <div align="center">
-  <a href="CHANGELOG.md"><img src="https://img.shields.io/badge/version-v3.2.0-9644F4?style=for-the-badge" alt="Version"></a>
+  <a href="CHANGELOG.md"><img src="https://img.shields.io/badge/version-v3.2.1-9644F4?style=for-the-badge" alt="Version"></a>
   <a href="LICENSE"><img src="https://img.shields.io/badge/license-AGPL--3.0-E53935?style=for-the-badge" alt="License"></a>
   <a href="https://www.python.org/downloads/"><img src="https://img.shields.io/badge/Python-3.10+-3776AB?style=for-the-badge&logo=python&logoColor=white" alt="Python"></a>
   <a href="https://github.com/AstrBotDevs/AstrBot"><img src="https://img.shields.io/badge/AstrBot-Compatible-00BFA5?style=for-the-badge&logo=robot&logoColor=white" alt="AstrBot Compatible"></a>

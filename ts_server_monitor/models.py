@@ -105,6 +105,12 @@ class ServerState:
     """
 
     # ---- 基线（用户进出检测用，仅在线快照会更新） ----
+    # 「首次基线是否已建立」的专用哨兵。必须与 last_client_nicknames 解耦：
+    # 空名单是服务器的合法状态（空服务器 / 全员离开 / 确认离线后清空），
+    # 如果用 `not last_client_nicknames` 当"尚未初始化"的判据，那么空服务器上
+    # 第一个连入的用户会被反复当作基线吞掉，导致"第一个人加入不通知"。
+    # 语义与 MC 插件的 `stable_status is None` 哨兵同构。
+    join_leave_initialized: bool = False
     last_clients_online: int | None = None
     last_client_nicknames: list[str] = field(default_factory=list)
 

@@ -178,6 +178,9 @@ def observe_status(
     if observed == "offline":
         # 已确认离线：清空用户进出基线 / 待确认事件，
         # 否则离线期间拉不到 clientlist，恢复后会把整段时间误报成“全员离开”。
+        # 注意：这里**不要**重置 join_leave_initialized 哨兵——清空名单只是丢弃
+        # 不可信的数据，重新上线后应走正常 diff（把恢复瞬间在线的人报为加入），
+        # 而不是被当成"首次基线"再次静默吞掉。
         state.last_client_nicknames = []
         state.last_clients_online = None
         state.pending_joins.clear()
@@ -202,6 +205,10 @@ def detect_join_leave(
 ) -> tuple[set[str], set[str], str | None]:
     """diff 用户进出，带防抖，返回 ``(confirmed_joins, confirmed_leaves, message)``。
 
+    首次基线的判据是 ``state.join_leave_initialized`` 哨兵（**不是** ``last_client_nicknames``
+    是否为空）：空名单是合法状态，用它判空会导致空服务器上第一个连入的用户被反复
+    当作基线吞掉。
+
     Args:
         server: 当前服务器配置
         state: 运行时状态（持有 last_* 与 pending_*）
@@ -217,8 +224,15 @@ def detect_join_leave(
     """
     current_nicks = {c.nickname for c in snapshot.clients}
 
-    # 首次基线建立：把当前在线用户直接记为 last；不报告任何 join/leave
-    if not state.last_client_nicknames:
+    # 首次基线建立：把当前在线用户直接记为 last；不报告任何 join/leave。
+    #
+    # 判据用专用哨兵 join_leave_initialized，**不能**用 `not last_client_nicknames`：
+    # 空名单是合法状态（空服务器、全员离开、确认离线后 observe_status 会清空它），
+    # 若拿它当"尚未初始化"的判据，则空服务器上第一个连入的人会被再次当作基线吞掉
+    # ——这正是"我是第一个连接到服务器，它不会通知"的根因。
+    # 该写法与 MC 插件的 `stable_status is None` 哨兵同构：只在真正的第一次置位。
+    if not state.join_leave_initialized:
+        state.join_leave_initialized = True
         state.last_client_nicknames = sorted(current_nicks)
         state.last_clients_online = snapshot.clients_online
         return set(), set(), None

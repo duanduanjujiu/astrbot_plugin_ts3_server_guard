@@ -1,6 +1,6 @@
 [project]
 name = "astrbot_plugin_ts3_server_guard"
-version = "3.2.0"
+version = "3.2.1"
 description = "TeamSpeak 3 多服务器监控插件（AI 修改版：v3.1 通知开关拆分、移除定时通知、UMO 推送目标）"
 requires-python = ">=3.10"
 dependencies = ["ts3>=1.0.11,<2"]
