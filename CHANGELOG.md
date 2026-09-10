@@ -4,6 +4,22 @@
 
 ---
 
+## [3.2.0] - 2026-09
+
+### 📦 维护性重构（按 AstrBot 官方开发文档合规化）
+
+- **命令名去空格**：`ts查询` 等含空格的命令被 AstrBot 解析成 `ts` + `查询` 两个 token，注册不上。已全部改为下划线：
+  - `/ts查询` → `/ts_query`
+  - `/ts推送目标` → `/ts_push_target`
+  - `/ts推送测试` → `/ts_push_test`
+  - 用户提示文本 / README / CHANGELOG / `_conf_schema.json` hint 同步
+- **`enable_auto_monitor` 默认值修复**：schema 默认 `true`，但 `load_settings` 兜底 `false`——静默不一致。现统一为 `True`。
+- **删除未文档化的 `servers` 字段兜底**：config.py 不再回退读取 `servers`，只支持 `server_entries`。
+- **`metadata.yaml` 补 `short_desc` + `support_platforms`**：声明支持 `aiocqhttp` / `qq_official` / `satori`。
+- **作者归属**：author / repo URL 从 `pengjinrui` 改为 `duanduanjujiu`。
+
+---
+
 ## [3.1.1] - 2026-09
 
 ### 🔀 聊天指令加 ts 前缀（避免与 astrbot_plugin_mc_server_guard 冲突）
