@@ -87,10 +87,10 @@ def _command_rest(event: AstrMessageEvent) -> str:
 # `astrbot.api.event.filter`. The decorator is marked deprecated but still works.
 @register(
     "astrbot_plugin_ts3_server_guard",
-    "pengjinrui",
+    "duanduanjujiu",
     "TeamSpeak 3 多服务器监控插件",
     "3.1.1",
-    repo="https://github.com/pengjinrui/astrbot_plugin_ts3_server_guard",
+    repo="https://github.com/duanduanjujiu/astrbot_plugin_ts3_server_guard",
 )
 class MyPlugin(Star):
     def __init__(self, context: Context, config: AstrBotConfig | None = None) -> None:
