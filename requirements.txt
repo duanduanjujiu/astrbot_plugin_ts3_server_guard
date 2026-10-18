@@ -6,5 +6,7 @@
 # 或通过 AstrBot WebUI 重新安装 / 重载本插件触发自动安装。
 
 # ServerQuery 协议客户端库（py-ts3）。代码在 ts_server_monitor/clients.py 中按需 import ts3。
-# PyPI 上 ts3 的最新版本为 1.0.11。
+# PyPI 上 ts3 的最新版本为 1.0.11（2018 年后无更新）。
+# 注意：ts3 1.0.11 依赖标准库 telnetlib，而 telnetlib 在 Python 3.13 中已移除；
+# 当前 AstrBot 镜像使用 Python 3.12，请勿在 Python 3.13+ 环境运行（后续计划改为纯 asyncio 客户端）。
 ts3>=1.0.11,<2

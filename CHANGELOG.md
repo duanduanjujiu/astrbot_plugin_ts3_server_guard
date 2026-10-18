@@ -4,6 +4,124 @@
 
 ---
 
+## [3.4.0] - 2026-10
+
+性能与体验优化（batch-2）。
+
+### ⚡ 持久连接 + keepalive
+
+每台服务器在 `LocalStatusClient` 内缓存一条 ServerQuery 连接（TCP + login + use），
+轮询复用；连接空闲超过 240s 发送 keepalive，连接失效/超时只重连一次并重试
+serverinfo，纯 connect/auth 失败不重复重连。实测：连续两次轮询只产生 **1 次**
+TCP accept + login（此前每 15s 一次），大幅降低 TS3 防洪风险与日志噪声。
+`close()` 会尽力退出所有缓存连接（最多等 1s 锁后并发 quit），不会因挂起服务器
+拖住插件卸载。
+
+### 🚀 并发轮询
+
+`monitor_loop` 每轮用 `asyncio.gather` 并发执行全部服务器的 tick；单台慢/离线
+服务器不再拖慢其它服务器，单台异常在协程内部隔离。连接受每服务器 asyncio.Lock
+保护，超时后仍在收尾的 worker 不会被下一轮重复使用。
+
+### 🔎 `/ts_query` 缓存 + 限频
+
+监控与手动查询都会写入快照缓存；`/ts_query` 在
+`max(QUERY_CACHE_TTL_MIN, join_leave_interval*1.5)` 内直接复用缓存，不再每次调用
+都新建 N 条查询连接。同一会话 5s 内重复查询直接回复“查询过于频繁”，不发网络请求。
+冷缓存仍会实时拉取并回写。
+
+### 👥 按 clid 识别用户
+
+`detect_join_leave` 从“昵称集合 diff”改为按 `ClientInfo.clid` 识别：
+同名用户可以各自播报加入/离开；同一 clid 改名只静默更新基线，不再误报
+“离开 + 加入”。确认离线后恢复在线时静默重建名单（`rebaseline_roster`），
+不再把此时在线的所有人补报为“加入”。
+
+### 🔕 新开关：`enable_join_leave_notify`
+
+默认开启；关闭后只维护进出基线与防抖状态、不播报加入/离开消息，
+重新开启不会补发关闭期间的事件。
+
+### 🎨 展示与安全
+
+- 离线快照的平台/版本/人数/频道/运行时间统一显示 `—`，不再出现 `0/0`、`0分钟` 等误导值。
+- `show_server_address` 优先显示 serverinfo 返回的语音端口，并在与 ServerQuery 端口
+  不同时括号标注查询端口。
+- 昵称清洗：去除控制字符/换行/制表符并截断到 32 字符；单条消息最多展示 20 个昵称
+  （超出以“等共 N 人”概括），避免换行注入与超长消息。
+
+### 🔧 其它
+
+- 确认离线后的恢复探测间隔从 60s 缩短到 30s，更快发现服务器恢复。
+- 旧版群号回退只在 AIOCQHTTP 上解析一次平台/客户端并复用，重试不再重复扫描适配器；
+  `get_client()` 为 None 或缺少 `api` 时安全跳过。
+- 删除未使用的遗留常量；新增可观测的 debug 日志（连接复用/重连/keepalive）。
+- 测试增至 **76 项**（新增 clid 身份、恢复重建、清洗/展示、缓存限频、并发轮询等）。
+- `logo.png` 压缩到 ~97KB / 256×256（AstrBot 只识别小写 `logo.png`）。
+- 版本号统一升级到 3.4.0。
+
+---
+
+## [3.3.0] - 2026-10
+
+可靠性修复（基于对线上 AstrBot 4.29.1 部署与 py-ts3 1.0.11 源码的审计）。
+
+### 🐛 推送目标优先级错误（聊天设置群号不生效）
+
+**现象**：WebUI 配了 `target_umo` 时，管理员执行 `/ts_push_target <QQ群号>`，命令回复
+“✅ 设置成功”，但测试消息与后续通知实际仍发到旧 UMO。
+
+**根因**：`_effective_umo()` 把运行期覆盖与 WebUI 配置做“或”运算，群号分支只清了
+`_umo_override`，`notify()` 又总是 UMO 优先。
+
+**修复**：新增纯函数 `resolve_target()`，运行期覆盖决定目标类型，UMO 与群号严格互斥；
+`_send_test()` 改为对新目标**显式发送**并返回 bool，`/ts_push_target` 只有测试成功才
+`save_runtime_target()` 并切换目标，失败不落盘、不改当前目标并回复 ❌。
+
+### 🛡️ TS3 查询不再可能永久阻塞 / 泄漏线程
+
+- 删除无效的 `.conn.settimeout()`（py-ts3 1.0.11 无 `conn` 属性，实际是 `telnet_conn`）。
+- 重写连接建立：两次 greeting 使用带超时的 `read_until()`；`login`/`use` 改用
+  `send(..., timeout=remaining)`（库的便捷方法内部 `timeout=None`，可能永久阻塞）。
+- 一次查询共享一个总 deadline（默认 30s），连接、greeting、login/use、serverinfo、
+  clientlist 都只能使用剩余时间；外层 `wait_for` 仅作兜底。
+- 改用 `LocalStatusClient` 专属 `ThreadPoolExecutor`，并在 `terminate()` 中
+  `shutdown`，避免默认线程池被卡死任务耗尽。
+- 移除从未被渲染、却每轮多打一条命令的 `channellist` 请求（频道数取 serverinfo）。
+- 将 `ts3.query` 的 INFO 连接日志压到 WARNING，避免每 15s 一条的日志噪音。
+
+### 🐛 clientlist 失败不再把在线服务器误判为离线
+
+`serverinfo` 成功即视为在线；`clientlist` 单独 `try/except`，失败时快照
+`roster_ok=False`、跳过用户进出 diff，人数回退 `virtualserver_clientsonline - 1`。
+错误码 520/524/768/2568 会输出可操作的排查提示。
+
+### 📨 通知可靠投递
+
+通知先进入有界队列（上限 50），由后台 worker 串行发送：单次超时 30s、最多 3 次、
+1s/2s 退避；轮询循环不再被发送阻塞，短暂失败不再直接丢事件。队列满时丢弃最早一条。
+状态变化先于用户进出入队，恢复在线时“已上线”先于“用户加入”。
+
+### 🧩 配置健壮性
+
+- JSON `null` 不再被 `str()` 成 `"None"` 骗过必填校验；密码字段不做 strip。
+- `query_port` 仅接受 1-65535；`virtual_server_id` 必须 ≥ 1，非法值告警并回退。
+- 重复 alias / 自动 key 冲突不再让第二台服务器“消失”：自动追加 `_2`、`_3` 后缀并告警。
+
+### 🔁 热重载修复
+
+移除 `sys.path` 注入，子模块改为包内相对导入（`from .ts_server_monitor...`）。
+AstrBot 重载插件时会清理 `data.plugins.<dir>.*`，子模块不再残留旧代码，改代码后
+重载即可生效（无需重启进程）。
+
+### ✅ 测试
+
+新增 `tests/`（unittest + AstrBot stub，不依赖真实 AstrBot / TS3）：
+覆盖配置解析、滞回矩阵、进出防抖、目标优先级、先测试后保存、通知队列重试、
+状态持久化等。运行：`python3 -m unittest discover -s tests -v`。
+
+---
+
 ## [3.2.1] - 2026-09
 
 ### 🐛 修复「第一个连入服务器的用户不通知」

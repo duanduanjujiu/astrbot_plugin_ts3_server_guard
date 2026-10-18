@@ -4,23 +4,26 @@
 1. **UMO**（``<平台实例名>:<消息类型>:<会话ID>``，如 ``atri:GroupMessage:1092815819``）
    —— 走官方 ``context.send_message(umo, chain)``，适配任意平台 / 群聊 / 私聊；
 2. **旧版纯 QQ 群号**（``1092815819``）
-   —— 兼容 v2.x：在已注册的适配器里找支持 ``send_group_msg`` 的客户端发送。
+   —— 兼容 v2.x：只在 OneBot 系适配器（AIOCQHTTP）上找支持
+   ``send_group_msg`` 的客户端发送；QQ 官方 / Satori 不支持该 action。
 
 UMO 发送失败时，如果它的会话 ID 是纯数字且消息类型是 GroupMessage，
 会自动回退到第 2 种路径（QQ 群号），提高对 NapCat 等 OneBot 协议端的兼容性。
+旧版路径在重试前只解析一次平台与客户端，避免每次重试都重新扫描适配器。
 """
 
 from __future__ import annotations
 
 import asyncio
+from typing import Any
 
 from astrbot.api import logger
 from astrbot.api.event.filter import PlatformAdapterType
 
 from .constants import PLATFORM_WAIT_TIMEOUT, SEND_MAX_ATTEMPTS
 
-# 按优先级尝试的平台适配器（旧版 QQ 群号路径）
-_PLATFORM_CANDIDATES = ("AIOCQHTTP", "QQ_OFFICIAL", "SATORI")
+# 旧版 QQ 群号路径只支持 OneBot 系的 AIOCQHTTP 适配器。
+_PLATFORM_CANDIDATES = ("AIOCQHTTP",)
 
 
 def describe_target(*, umo: str | None = None, group_id: str | None = None) -> str:
@@ -66,33 +69,87 @@ async def _send_by_umo(context, umo: str, text: str) -> bool:
         return False
 
 
-async def _resolve_platform(context):
-    """在已注册的适配器里找一个支持 send_group_msg 的。"""
+async def _resolve_platform_client(
+    context,
+) -> tuple[Any | None, Any | None, str | None]:
+    """在已注册适配器里找一个可用的 OneBot 平台与客户端。
+
+    Returns:
+        ``(platform, client, adapter_name)``；三者仅在平台与客户端都可用时非空。
+        只有 ``AIOCQHTTP`` 支持旧版 ``send_group_msg``，其它平台不参与回退。
+    """
     for adapter_name in _PLATFORM_CANDIDATES:
         adapter_type = getattr(PlatformAdapterType, adapter_name, None)
         if adapter_type is None:
+            logger.warning(f"平台适配器枚举缺少 {adapter_name}，跳过旧版群号回退")
             continue
+
         candidate = context.get_platform(adapter_type)
-        if candidate and hasattr(candidate, "get_client"):
-            return candidate, adapter_name
-    return None, None
+        if candidate is None:
+            logger.debug(f"平台适配器 {adapter_name} 未注册，跳过旧版群号回退")
+            continue
+
+        get_client = getattr(candidate, "get_client", None)
+        if not callable(get_client):
+            logger.warning(f"平台适配器 {adapter_name} 不支持 get_client，跳过")
+            continue
+
+        try:
+            client = get_client()
+        except Exception as exc:  # noqa: BLE001 - 单个适配器异常不影响其它候选
+            logger.warning(f"获取平台客户端 {adapter_name} 失败: {exc!r}")
+            continue
+
+        if client is None:
+            logger.debug(f"平台适配器 {adapter_name} 暂无可用客户端，跳过")
+            continue
+        if not hasattr(client, "api"):
+            logger.warning(f"平台客户端 {adapter_name} 缺少 api，跳过旧版群号回退")
+            continue
+
+        return candidate, client, adapter_name
+    return None, None, None
+
+
+async def _resolve_platform(context) -> Any | None:
+    """返回可用的旧版 QQ 群号平台适配器；平台或客户端不可用时返回 None。"""
+    platform, _client, _adapter_name = await _resolve_platform_client(context)
+    return platform
+
+
+async def _wait_for_platform_client(
+    context,
+    timeout_seconds: float = PLATFORM_WAIT_TIMEOUT,
+    interval_seconds: float = 0.5,
+) -> tuple[Any | None, Any | None, str | None]:
+    """循环等待可用的 OneBot 平台与客户端出现。
+
+    Returns:
+        ``(platform, client, adapter_name)``，超时仍未就绪时全为 None。
+    """
+    deadline = asyncio.get_running_loop().time() + timeout_seconds
+    while True:
+        platform, client, adapter_name = await _resolve_platform_client(context)
+        if platform is not None and client is not None:
+            logger.info(f"旧版群号回退使用平台适配器: {adapter_name}")
+            return platform, client, adapter_name
+        if asyncio.get_running_loop().time() >= deadline:
+            return None, None, None
+        await asyncio.sleep(interval_seconds)
 
 
 async def wait_for_platform_ready(
     context,
     timeout_seconds: float = PLATFORM_WAIT_TIMEOUT,
     interval_seconds: float = 0.5,
-):
-    """循环等待至少一个可用平台适配器出现。"""
-    deadline = asyncio.get_running_loop().time() + timeout_seconds
-    while True:
-        platform, adapter_name = await _resolve_platform(context)
-        if platform:
-            logger.info(f"通知发送使用平台适配器: {adapter_name}")
-            return platform
-        if asyncio.get_running_loop().time() >= deadline:
-            return None
-        await asyncio.sleep(interval_seconds)
+) -> Any | None:
+    """循环等待可用的旧版 QQ 群号平台适配器；超时返回 None。"""
+    platform, _client, _adapter_name = await _wait_for_platform_client(
+        context,
+        timeout_seconds=timeout_seconds,
+        interval_seconds=interval_seconds,
+    )
+    return platform
 
 
 async def _send_to_qq_group(context, group_id: str, text: str) -> bool:
@@ -101,18 +158,18 @@ async def _send_to_qq_group(context, group_id: str, text: str) -> bool:
         logger.error(f"QQ 群号不合法: {group_id!r}")
         return False
 
+    # 平台与客户端只解析一次，后续重试复用同一个客户端（不重复扫描适配器）。
+    platform, client, adapter_name = await _wait_for_platform_client(context)
+    if platform is None or client is None:
+        logger.error("无法获取可用的 AIOCQHTTP 平台客户端，无法发送群消息")
+        return False
+
     last_error: Exception | None = None
     for attempt in range(1, SEND_MAX_ATTEMPTS + 1):
         try:
-            platform = await wait_for_platform_ready(context)
-            if not platform:
-                logger.error("无法获取可用的平台客户端，无法发送群消息")
-                return False
-
-            client = platform.get_client()
             logger.info(
-                f"开始发送群消息到 {group_id}（第 {attempt}/{SEND_MAX_ATTEMPTS} 次），"
-                f"消息长度: {len(text)}"
+                f"开始发送群消息到 {group_id}（第 {attempt}/{SEND_MAX_ATTEMPTS} 次，"
+                f"适配器 {adapter_name}），消息长度: {len(text)}"
             )
             result = await client.api.call_action(
                 "send_group_msg",

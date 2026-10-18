@@ -21,12 +21,13 @@
     "description": "全局默认用户进出防抖时长（秒）",
     "type": "float",
     "default": 3,
-    "hint": "疑似 join/leave 必须在该时长内被再次观测到才被确认为有效；否则视为网络抖动丢弃。建议 2-5 秒。"
+    "hint": "疑似 join/leave 事件需在防抖时长后的下一轮轮询仍成立才会被确认（默认 15s 轮询下实际延迟约 2 个轮询周期）；否则视为网络抖动丢弃。建议 2-5 秒。"
   },
   "enable_auto_monitor": {
     "description": "插件加载后自动启动监控",
     "type": "bool",
-    "default": true
+    "default": true,
+    "hint": "修改任意配置并保存后，AstrBot 会自动重载插件，新配置即时生效。"
   },
   "enable_status_push": {
     "description": "推送服务器上线/下线切换通知",
@@ -39,6 +40,12 @@
     "type": "bool",
     "default": false,
     "hint": "开启后，每次监控启动（插件加载/手动启动）且服务器在线时，推送一次「监控已启动」消息。默认关闭以减少噪音。"
+  },
+  "enable_join_leave_notify": {
+    "description": "推送用户进出通知",
+    "type": "bool",
+    "default": true,
+    "hint": "关闭后仍会轮询并维护用户基线（避免重新开启时把历史用户补报为加入），只是不推送加入/离开消息。"
   },
   "display_options": {
     "description": "消息展示项开关",
@@ -53,7 +60,8 @@
       "show_server_address": {
         "description": "展示服务器地址",
         "type": "bool",
-        "default": false
+        "default": false,
+        "hint": "优先显示 serverinfo 返回的语音端口；与 ServerQuery 端口不同时会在括号内标注查询端口。"
       },
       "show_server_platform": {
         "description": "展示服务器平台",
@@ -115,7 +123,7 @@
           "alias": {
             "description": "服务器唯一标识",
             "type": "string",
-            "hint": "建议填写英文字母、数字或下划线，例如 ts_main。",
+            "hint": "建议填写英文、数字或下划线，例如 ts_main，并保证全局唯一；留空时从 display_name 自动生成，重复会自动加后缀并在日志告警。",
             "default": ""
           },
           "display_name": {
@@ -139,23 +147,25 @@
             "description": "ServerQuery 端口",
             "type": "int",
             "default": 10011,
-            "hint": "填 0 或留空时使用全局默认 10011。"
+            "hint": "合法范围 1-65535；填 0 或留空时使用全局默认 10011。"
           },
           "query_user": {
             "description": "ServerQuery 用户名",
             "type": "string",
+            "hint": "建议使用专用查询账号并授予最小权限；用户进出检测需要 b_virtualserver_client_list 权限。",
             "default": ""
           },
           "query_password": {
             "description": "ServerQuery 密码",
             "type": "string",
-            "hint": "明文存储，建议只授予必要权限。",
+            "hint": "明文存储；建议使用仅具备查询权限的专用账号，不要直接使用 serveradmin。",
             "default": ""
           },
           "virtual_server_id": {
             "description": "虚拟服务器 ID",
             "type": "int",
-            "default": 1
+            "default": 1,
+            "hint": "必须是 ≥1 的整数；非法值会回退到 1 并告警。"
           },
           "join_leave_interval": {
             "description": "单服务器用户进出检测间隔（秒，最小 5）",
