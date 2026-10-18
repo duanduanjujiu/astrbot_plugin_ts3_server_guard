@@ -8,7 +8,6 @@ import unittest
 from pathlib import Path
 
 import _support  # noqa: F401
-
 from astrbot_plugin_ts3_server_guard.ts_server_monitor import state as state_module
 
 

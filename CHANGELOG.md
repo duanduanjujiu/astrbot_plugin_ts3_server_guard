@@ -4,6 +4,71 @@
 
 ---
 
+## [3.5.0] - 2026-10
+
+插件市场上架审查整改：移除 py-ts3 依赖，改为纯 asyncio 客户端。
+
+### 🔍 审查项 1：不再压制第三方库日志
+
+审查意见指出 `ts_server_monitor/clients.py` 使用
+`logging.getLogger("ts3.query").setLevel(logging.WARNING)` 压制第三方库日志，
+不符合日志规范。
+
+**整改**：直接移除 `py-ts3` 依赖，协议读写全部用 `asyncio.open_connection` 实现。
+插件不再触碰任何第三方 logger，所有日志统一走 `astrbot.api.logger`。
+
+### 🐍 审查项 2：移除 telnetlib 依赖，支持 Python 3.13+
+
+`py-ts3 1.0.11` 依赖 Python 标准库 `telnetlib`，而其在 Python 3.13 中已被移除。
+新实现不再使用 `telnetlib` / 线程池 / 阻塞 socket，因此：
+
+- 无第三方运行依赖（`requirements.txt` / `pyproject.toml` 同步清空）；
+- 支持 Python 3.10 ~ 3.13+；
+- 事件循环内无阻塞调用，无 `ThreadPoolExecutor`、无长时间泄漏线程。
+
+### 🔌 内置 ServerQuery 协议实现
+
+- 连接握手：校验 `TS3` / `Welcome` 两行 greeting，所有读写受单次尝试的总 deadline 约束。
+- 命令与响应：`\n\r` 分帧，读到 `error id=… msg=…` 行为止；非 0 错误抛
+  `_QueryError`，保留 520（认证）/524（防洪）/768（sid）/2568（clientlist 权限）排查提示。
+- 完整 TS3 转义/反转义表（`\s \p \\ \/ \n \r \t \v \f \a \b`），昵称/密码中的
+  空格、竖线、反斜杠、换行均可正确往返。
+- 记录解析：`|` 分隔多条记录、空格分隔字段、空值兼容；未订阅的 `notify` 行防御性忽略。
+- 协议错位（serverinfo 缺 `virtualserver_name`、clientlist 缺 `clid`）按失败处理，
+  绝不会把错位数据当成“在线快照”；超长响应（>8MB）直接断开。
+- 行为保持不变：每服务器持久连接 + 空闲 keepalive（`version` 命令）、失效重连一次、
+  clientlist 权限失败降级 `roster_ok=False` + serverinfo 人数回退、`voice_port` 展示。
+
+### 🛡️ 独立协议审计后的加固
+
+发布前由独立审计对照真实 TS3 服务器与 py-ts3 语义验证，并补了以下防护：
+
+- **空/部分错位的 clientlist 不再被信任**：真实 TS3 的 clientlist 一定包含本查询
+  连接，因此空响应或任一记录缺少 `clid` 一律按协议错误处理（`roster_ok=False`），
+  避免“全员离开”误报。
+- **服务端查询错误不再重连重登**：serverinfo 遇到 524 防洪 / 2568 权限等
+  `_QueryError` 时保留已对齐连接，不再二次登录加剧防洪；只有网络/超时/协议失效
+  才重连一次。
+- **error 行严格解析**：缺少合法 `id` 的 error 行按不可重试的协议错误处理，
+  不再伪装成 `id=-1` 触发重连。
+- **多行 serverinfo 合并**：拆成多行返回时逐条合并，避免字段丢失。
+- **日志去重**：clientlist 持续失败只在每段故障期告警一次，恢复后重置；
+  超时日志不再误报单次超时秒数。
+- **测试补强**：假服务器记录原始命令行，新增登录转义端到端断言、chunked
+  greeting/response、notify 行、多行 clientlist/serverinfo、同 key 目标变更重连、
+  keepalive 失败重连、空/混合 clientlist、524 不重登等回归用例。
+
+### ✅ 测试
+
+新增 `tests/fake_ts3_server.py`（asyncio 行协议假服务器）与
+`tests/test_clients_protocol.py`（31 项协议/集成测试）。测试总数 **76 → 122**，
+覆盖连接复用、断线重连一次、静默服务器超时、clientlist 2568 降级、524 防洪、
+认证/sid 错误、转义、协议错位、close 幂等、无第三方依赖扫描等。
+测试在 Python 3.11 / 3.12 / 3.13.16（官方镜像）与真实 AstrBot 4.29.1 容器中均通过；
+另用真实 TS3 服务器完成只读联通验证（serverinfo/clientlist、语音端口、版本、人数）。
+
+---
+
 ## [3.4.0] - 2026-10
 
 性能与体验优化（batch-2）。

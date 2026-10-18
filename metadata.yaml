@@ -1,7 +1,7 @@
 name: astrbot_plugin_ts3_server_guard
 short_desc: TeamSpeak 3 多服务器监控（用户进出防抖 + 上下线滞回 + UMO 推送）
-desc: "[AI 修改版] 基于 astrbot_plugin_tsserver_relay (GEMILUXVII) 的 TeamSpeak 3 多服务器监控插件：仿 minecraft_multi_monitor 架构、上下线滞回判定、防僵尸任务、UMO 动态推送目标；上下线/监控启动/用户进出通知开关；v3.3.0 修复推送目标优先级、通知重试、TS3 查询总超时、clientlist 失败误判离线与热重载；v3.4.0 增加持久连接与保活、并发轮询、/ts_query 缓存限频、按 clid 识别用户、恢复名单静默重建与语音端口展示。"
-version: 3.4.0
+desc: "[AI 修改版] 基于 astrbot_plugin_tsserver_relay (GEMILUXVII) 的 TeamSpeak 3 多服务器监控插件：仿 minecraft_multi_monitor 架构、上下线滞回判定、防僵尸任务、UMO 动态推送目标；上下线/监控启动/用户进出通知开关；v3.3.0 修复推送目标优先级、通知重试、TS3 查询总超时、clientlist 失败误判离线与热重载；v3.4.0 增加持久连接与保活、并发轮询、/ts_query 缓存限频、按 clid 识别用户、恢复名单静默重建与语音端口展示；v3.5.0 使用纯 asyncio ServerQuery 客户端，移除 py-ts3/telnetlib 依赖并支持 Python 3.13+。"
+version: 3.5.0
 author: duanduanjujiu
 repo: "https://github.com/duanduanjujiu/astrbot_plugin_ts3_server_guard"
 display_name: TeamSpeak 3 服务器监控 (AI 修改版)

@@ -5,13 +5,13 @@
 # <div align="center">TeamSpeak 3 Server Guard</div>
 
 <div align="center">
-  <strong>AstrBot TeamSpeak 3 多服务器监控插件（AI 修改版 · v3.4.0）</strong>
+  <strong>AstrBot TeamSpeak 3 多服务器监控插件（AI 修改版 · v3.5.0）</strong>
 </div>
 
 <br>
 
 <div align="center">
-  <a href="CHANGELOG.md"><img src="https://img.shields.io/badge/version-v3.4.0-9644F4?style=for-the-badge" alt="Version"></a>
+  <a href="CHANGELOG.md"><img src="https://img.shields.io/badge/version-v3.5.0-9644F4?style=for-the-badge" alt="Version"></a>
   <a href="LICENSE"><img src="https://img.shields.io/badge/license-AGPL--3.0-E53935?style=for-the-badge" alt="License"></a>
   <a href="https://www.python.org/downloads/"><img src="https://img.shields.io/badge/Python-3.10+-3776AB?style=for-the-badge&logo=python&logoColor=white" alt="Python"></a>
   <a href="https://github.com/AstrBotDevs/AstrBot"><img src="https://img.shields.io/badge/AstrBot-Compatible-00BFA5?style=for-the-badge&logo=robot&logoColor=white" alt="AstrBot Compatible"></a>
@@ -97,6 +97,13 @@ v3.4.0（性能与体验优化，AI 修改版）：
 - **展示优化**：离线状态用 “—” 代替误导性的 0 / 未知；地址优先显示语音端口；
   昵称清洗与截断，防止换行注入和超长消息。
 
+v3.5.0（无第三方依赖，AI 修改版）：
+- **纯 asyncio ServerQuery 客户端**：不再依赖 `py-ts3`，协议读写全部在事件循环内异步完成，
+  无 `telnetlib`、无线程池，可在 **Python 3.13+** 运行。
+- **不再压制第三方库日志**：移除 py-ts3 后插件也不再调整任何第三方 logger 级别，
+  所有日志统一走 `astrbot.api.logger`（插件市场上架审查项）。
+- 协议解析、TS3 转义、错误码提示、持久连接/重连、clientlist 降级语义保持不变。
+
 消息样式与 minecraft 插件刻意区分：**推送文案为纯文本（无 emoji），带 `━━━` 头尾分隔线**。
 
 ## 功能特性
@@ -114,6 +121,7 @@ v3.4.0（性能与体验优化，AI 修改版）：
 - **可靠通知队列（v3.3.0）**：通知后台串行发送，失败自动重试，不阻塞轮询
 - **持久连接与查询优化（v3.4.0）**：连接复用 + keepalive、查询总超时、`/ts_query` 缓存限频
 - **恢复更安静（v3.4.0）**：离线恢复静默重建名单，避免“全员加入”刷屏；离线恢复探测 30s
+- **无第三方运行依赖（v3.5.0）**：纯 asyncio 实现 ServerQuery，支持 Python 3.13+
 - **上下线滞回判定（v3）**：连续失败采样确认后才报“已离线”，避免防洪 / 抖动误报
 - **数据持久化**：服务器配置由 AstrBot 面板管理；推送目标运行时设置存 `plugin_data`，重启 / 重载不丢失
 
@@ -261,18 +269,20 @@ v3.0.0 起聊天下令设置的推送目标（UMO / 群号）持久化在
 
 ## FAQ
 
-### Q: 升级 AstrBot 后提示缺少 ts3 依赖
+### Q: 升级 AstrBot 后需要安装依赖吗？
 
-插件运行依赖已写入插件根目录的 `requirements.txt`（仅 `ts3`）。缺依赖时日志会输出
-`缺少 ts3 依赖（请执行 pip install -r requirements.txt 后重载插件）`。
-升级 / 重建 AstrBot（如更换 docker 镜像）后若报缺库，在 AstrBot 容器内执行一次：
+**v3.5.0 起不需要**：插件已改为纯 asyncio 的 ServerQuery 客户端，没有第三方运行依赖，
+`requirements.txt` 也不再安装任何包。升级 / 重建 AstrBot 后直接重载插件即可。
+
+早期版本（≤ v3.4.x）依赖 `py-ts3`；如仍使用旧版本且日志提示 `缺少 ts3 依赖`，
+在 AstrBot 容器内执行一次：
 
 ```bash
 pip install -r /AstrBot/data/plugins/astrbot_plugin_ts3_server_guard/requirements.txt
 ```
 
 然后重载插件；或在 WebUI 里对该插件执行一次重装 / 更新，让 AstrBot 按
-`requirements.txt` 自动安装依赖。
+`requirements.txt` 自动安装依赖。升级到 v3.5.0 后该依赖会被移除。
 
 ### Q: 用户进出提示很慢 / 被防洪拦截
 
@@ -337,14 +347,15 @@ python3 -m unittest discover -s tests -v
 
 测试覆盖：配置解析（重复 key、null、端口/实例 ID）、上下线滞回矩阵、进出防抖与首次基线、
 按 clid 识别用户（同名/改名）、离线恢复静默重建、昵称清洗与展示、目标解析优先级、
-先测试后保存、通知队列重试、查询缓存与限频、并发轮询、状态持久化等。
+先测试后保存、通知队列重试、查询缓存与限频、并发轮询、纯 asyncio ServerQuery 协议
+（握手/转义/错误码/复用/重连/超时）、状态持久化等（当前共 122 项）。
 
 ## 相关链接
 
 - [AstrBot 官方文档](https://astrbot.app/)
 - [AstrBot 插件开发指南](https://docs.astrbot.app/dev/star/plugin-new.html)
 - [TeamSpeak 官网](https://teamspeak.com/)
-- [ts3 Python 库](https://github.com/benediktschmitt/py-ts3)
+- [TeamSpeak ServerQuery 协议文档](https://community.teamspeak.com/t/serverquery-documentation/3182)
 - [参考插件 astrbot_plugin_minecraft_multi_monitor](https://github.com/XiaolongYang-HZAU/astrbot_plugin_minecraft_multy_monitor)
 
 ## 许可证

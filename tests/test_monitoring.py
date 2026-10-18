@@ -5,7 +5,6 @@ from __future__ import annotations
 import unittest
 
 import _support  # noqa: F401
-
 from astrbot_plugin_ts3_server_guard.ts_server_monitor.constants import SEPARATOR
 from astrbot_plugin_ts3_server_guard.ts_server_monitor.models import (
     ClientInfo,

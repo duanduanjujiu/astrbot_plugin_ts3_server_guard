@@ -1,9 +1,9 @@
 [project]
 name = "astrbot_plugin_ts3_server_guard"
-version = "3.4.0"
-description = "TeamSpeak 3 多服务器监控插件（AI 修改版：v3.4 持久连接、并发轮询、查询缓存限频、clid 身份识别、通知重试）"
+version = "3.5.0"
+description = "TeamSpeak 3 多服务器监控插件（AI 修改版：纯 asyncio ServerQuery 客户端、无第三方依赖、持久连接、并发轮询、查询缓存限频）"
 requires-python = ">=3.10"
-dependencies = ["ts3>=1.0.11,<2"]
+dependencies = []
 
 [tool.ruff]
 target-version = "py310"

@@ -1,6 +1,11 @@
 """AstrBot TeamSpeak 3 服务器监控插件。
 
-v3.4.0（本轮优化）：
+v3.5.0（本轮优化，插件市场上架审查项）：
+- **纯 asyncio ServerQuery 客户端**：移除 py-ts3 与 telnetlib 依赖，协议读写全部
+  在事件循环内异步完成；不再压制任何第三方库日志，并且可运行在 Python 3.13+。
+- 协议解析、TS3 转义、错误码（520/524/768/2568）提示、持久连接与重连语义保持不变。
+
+v3.4.0（上一轮优化）：
 - **持久连接**：每台服务器在客户端内复用一条 ServerQuery 连接（login 只做一次），
   空闲过久发送 keepalive，连接失效时重连一次；避免每 15s 重复 TCP+login 触发防洪。
 - **并发轮询**：每轮用 ``asyncio.gather`` 并发执行所有服务器的轮询节拍，
@@ -53,11 +58,11 @@ from .ts_server_monitor.config import (
     parse_umo,
 )
 from .ts_server_monitor.constants import (
+    DEFAULT_STATUS_CONFIRM_OFFLINE,
+    DEFAULT_STATUS_CONFIRM_ONLINE,
     DEGRADE_AFTER_FAILURES,
     DEGRADED_OFFLINE_PROBE_INTERVAL,
     DEGRADED_POLL_INTERVAL,
-    DEFAULT_STATUS_CONFIRM_OFFLINE,
-    DEFAULT_STATUS_CONFIRM_ONLINE,
     NOTIFY_MAX_ATTEMPTS,
     NOTIFY_QUEUE_MAX,
     NOTIFY_SEND_TIMEOUT,
@@ -116,7 +121,7 @@ def _command_rest(event: AstrMessageEvent) -> str:
     "astrbot_plugin_ts3_server_guard",
     "duanduanjujiu",
     "TeamSpeak 3 多服务器监控插件",
-    "3.4.0",
+    "3.5.0",
     repo="https://github.com/duanduanjujiu/astrbot_plugin_ts3_server_guard",
 )
 class MyPlugin(Star):

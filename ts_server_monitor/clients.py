@@ -1,14 +1,15 @@
-"""TS3 ServerQuery 异步客户端。
+"""TS3 ServerQuery 纯 asyncio 客户端。
 
-同步 ``ts3`` 库的所有网络读写都交给 ``LocalStatusClient`` 专属线程池执行，
-避免阻塞事件循环。每台服务器在客户端内缓存一条持久 ServerQuery 连接
-（TCP + login + use），轮询时复用；只有连接失效、或空闲过久发送 keepalive
-后确认异常时，才丢弃旧连接并重连一次，避免每轮都新建连接触发 TS3 防洪。
+v3.5.0 起不再依赖 py-ts3：协议读写直接用 ``asyncio.open_connection`` 实现，
+因此没有线程池、没有阻塞式 socket 读取，也不再调整第三方库的日志级别
+（插件市场审查项），并可运行在 Python 3.13+（旧依赖所用的 telnet 标准库
+模块已被移除）。
 
-单次查询（一次尝试）共享一个总超时 deadline：连接、两次 greeting、login、
-use、keepalive、serverinfo、clientlist 的每个阻塞步骤都只拿到剩余时间，
-因此任何一步卡住都会在 ``timeout`` 内失败返回，不会泄漏长期阻塞的线程。
-重连尝试使用新的 deadline，故最坏耗时约为 ``2 * timeout``。
+通信模型：每台服务器缓存一条持久 ServerQuery 连接（TCP + 两次 greeting +
+login + use），轮询时复用，避免每轮新建连接触发 TS3 防洪；只有连接失效、
+协议错位或空闲过久保活失败时，才丢弃旧连接并重连一次。单次尝试共享一个
+总 deadline（默认 ``timeout`` 秒）：连接、greeting、login、use、保活、
+serverinfo、clientlist 的每个读写步骤都只拿到剩余时间，超时即失败返回。
 
 只请求 ``serverinfo``（权威数据）与 ``clientlist``（在线名单，可选）：
 频道数取自 serverinfo 的 ``virtualserver_channelsonline``，不再请求 channellist。
@@ -18,12 +19,8 @@ use、keepalive、serverinfo、clientlist 的每个阻塞步骤都只拿到剩�
 from __future__ import annotations
 
 import asyncio
-import logging
-import threading
 import time
-from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime
-from functools import partial
 from typing import Any, NamedTuple
 
 from astrbot.api import logger
@@ -31,31 +28,49 @@ from astrbot.api import logger
 from .constants import CLIENT_TYPE_REGULAR, DEFAULT_NETWORK_TIMEOUT
 from .models import ClientInfo, ServerConfig, ServerSnapshot
 
-# 单次尝试在总 deadline 之外额外留给线程收尾（发 quit、关闭连接）的余量。
+# 一次完整拉取（含一次重连）在 ``2 * timeout`` 之外的兜底余量。
 _WAIT_FOR_GRACE = 2.0
 
-# 连接空闲超过该秒数时发送 keepalive，避免被服务端按空闲连接断开。
+# 连接空闲超过该秒数时发送轻量 version 命令保活，避免被服务端按空闲断开。
 IDLE_KEEPALIVE_SECONDS = 240.0
 
-# 读取 keepalive 响应的最长等待；真实 TS3 立即回 error 行，不回包的服务端
-# 也不至于把本次查询的 deadline 全耗光。
-_KEEPALIVE_DRAIN_TIMEOUT = 0.5
+# 保活命令的独立超时：即使服务端失联也不占满整次尝试的 deadline。
+_KEEPALIVE_TIMEOUT = 5.0
 
-# 线程池上限：每台服务器同一时刻只占一个线程（同连接内串行），不同服务器可并发。
-_EXECUTOR_MAX_WORKERS = 8
+# 单条响应行 / 单次响应数据的上限，防止异常服务端无限输出拖垮内存。
+_STREAM_LIMIT = 4 * 1024 * 1024
+_MAX_RESPONSE_BYTES = 8 * 1024 * 1024
 
-# ts3 库是可选依赖：惰性导入，避免插件在缺包时整体加载失败。
-_ts3_query: Any = None
-_telnetlib: Any = None
-_bounded_connection_cls: Any = None
+# 关闭连接时等待写缓冲收尾的上限。
+_CLOSE_TIMEOUT = 1.0
+_CLOSE_ALL_TIMEOUT = 2.0
+
+_LINE_ENDING = b"\n\r"
+_ERROR_PREFIX = "error "
 
 # 常见 TS3 错误码 -> 可操作的排查提示。
 _ERROR_ID_HINTS = {
     520: "认证失败，请检查 query_user / query_password",
     524: "触发 TS3 防洪，请把本机 IP 加入 query_ip_allowlist 或加大轮询间隔",
     768: "virtual_server_id 无效",
-    2568: "查询账号缺少 clientlist 权限（b_virtualserver_client_list）",
+    2568: "查询账号缺少所需权限（clientlist 需要 b_virtualserver_client_list）",
 }
+
+# TS3 ServerQuery 转义表（服务端只接受这些转义形式）。
+_ESCAPE_MAP = {
+    "\\": "\\\\",
+    "/": "\\/",
+    " ": "\\s",
+    "|": "\\p",
+    "\n": "\\n",
+    "\r": "\\r",
+    "\t": "\\t",
+    "\v": "\\v",
+    "\f": "\\f",
+    "\a": "\\a",
+    "\b": "\\b",
+}
+_UNESCAPE_MAP = {value[1:]: key for key, value in _ESCAPE_MAP.items()}
 
 
 def _now_text() -> str:
@@ -78,96 +93,111 @@ def _remaining(deadline: float) -> float:
     return remaining
 
 
-def _load_ts3() -> Any:
-    """惰性导入 ts3，并构造带总超时的连接类（进程内只构造一次）。"""
-    global _ts3_query, _telnetlib, _bounded_connection_cls
-    if _bounded_connection_cls is not None:
-        return _bounded_connection_cls
+def _escape(value: Any) -> str:
+    """按 TS3 ServerQuery 规则转义参数值。"""
+    return "".join(_ESCAPE_MAP.get(char, char) for char in str(value))
 
-    import telnetlib
 
-    import ts3
-    import ts3.query
+def _unescape(value: str) -> str:
+    """反转义 TS3 ServerQuery 字段值；未知转义按字符本身处理。"""
+    result: list[str] = []
+    index = 0
+    while index < len(value):
+        char = value[index]
+        if char == "\\" and index + 1 < len(value):
+            escaped = value[index + 1]
+            result.append(_UNESCAPE_MAP.get(escaped, escaped))
+            index += 2
+        else:
+            result.append(char)
+            index += 1
+    return "".join(result)
 
-    # 库内部每次建连都会打 INFO，统一压到 WARNING（只做一次）。
-    logging.getLogger("ts3.query").setLevel(logging.WARNING)
 
-    class _BoundedTS3Connection(ts3.query.TS3Connection):
-        """TS3Connection 子类：所有阻塞读都受同一个 deadline 约束。
+def _build_command(
+    command: str,
+    common_parameters: dict[str, Any] | None = None,
+) -> bytes:
+    """拼装一条 ServerQuery 命令（含转义参数与行结束符）。"""
+    parts = [command]
+    for key, value in (common_parameters or {}).items():
+        parts.append(f"{key}={_escape(value)}")
+    return " ".join(parts).encode("utf-8") + _LINE_ENDING
 
-        父类 ``open()`` 的两次 greeting 读取使用 ``read_until(timeout=None)``，
-        服务器接受 TCP 却迟迟不发欢迎信息时会永久阻塞，故在此重写。
-        """
 
-        def open(
-            self,
-            host,
-            port=10011,
-            timeout=None,
-            deadline=None,
-        ):
-            if self.is_connected():
-                raise OSError("The client is already connected.")
-            if deadline is None:
-                if timeout is None:
-                    timeout = DEFAULT_NETWORK_TIMEOUT
-                deadline = time.monotonic() + timeout
+def _parse_property(token: str) -> tuple[str, str]:
+    """解析 ``key=value``；没有 ``=`` 时值为空，多个 ``=`` 归入值。"""
+    key, separator, value = token.partition("=")
+    if not separator:
+        value = ""
+    return _unescape(key), _unescape(value)
 
-            self._telnet_conn = _telnetlib.Telnet(
-                host, port, timeout=_remaining(deadline)
-            )
-            try:
-                # 两次 greeting（b"TS3\n\r" 与 Welcome 行）都必须读到数据。
-                for _ in range(2):
-                    greeting = self._telnet_conn.read_until(
-                        b"\n\r", timeout=_remaining(deadline)
-                    )
-                    if not greeting:
-                        raise TimeoutError("读取 TS3 ServerQuery 欢迎信息超时")
-            except BaseException:
-                self._telnet_conn.close()
-                self._telnet_conn = None
-                raise
 
-            self._telnet_queue = []
-            self._num_pending_queries = 0
-            self._event_queue = []
-            return None
+def _parse_item(item: str) -> dict[str, str]:
+    """解析一条数据记录（空格分隔的 key=value 列表）。"""
+    return dict(_parse_property(token) for token in item.split())
 
-    _ts3_query = ts3.query
-    _telnetlib = telnetlib
-    _bounded_connection_cls = _BoundedTS3Connection
-    return _bounded_connection_cls
+
+def _parse_records(data_lines: list[str]) -> list[dict[str, str]]:
+    """解析响应数据行：记录以 ``|`` 分隔，多行结果依次拼接。"""
+    records: list[dict[str, str]] = []
+    for line in data_lines:
+        for item in line.split("|"):
+            if item.strip():
+                records.append(_parse_item(item))
+    return records
+
+
+class _ProtocolError(Exception):
+    """TS3 响应不符合协议（或响应与请求错位）。
+
+    ``retryable`` 为 False 表示重新建立连接也无济于事（例如 error 行本身损坏），
+    上层只丢弃连接、不再重连一次。
+    """
+
+    def __init__(self, message: str, *, retryable: bool = True) -> None:
+        super().__init__(message)
+        self.retryable = retryable
+
+
+class _QueryError(Exception):
+    """TS3 服务端返回了非 0 error id。"""
+
+    def __init__(self, error_id: int, message: str) -> None:
+        self.error_id = error_id
+        self.message = message
+        super().__init__(f"error id {error_id}: {message}")
 
 
 def _describe_error(exc: BaseException) -> str:
-    """把 ts3 / 网络异常归类成可日志输出的一句话。"""
-    if isinstance(exc, ImportError):
-        return (
-            "TS3 查询失败: 缺少 ts3 依赖（请执行 "
-            "pip install -r requirements.txt 后重载插件）"
-        )
-    if _ts3_query is not None and isinstance(exc, _ts3_query.TS3QueryError):
-        error = getattr(getattr(exc, "resp", None), "error", None) or {}
-        error_id = str(error.get("id", "?"))
-        message = str(error.get("msg", "unknown"))
-        hint = _ERROR_ID_HINTS.get(_to_int(error_id, -1))
-        text = f"TS3 查询失败: error id {error_id}: {message}"
+    """把协议 / 网络异常归类成可日志输出的一句话。"""
+    if isinstance(exc, _QueryError):
+        hint = _ERROR_ID_HINTS.get(exc.error_id)
+        text = f"TS3 查询失败: error id {exc.error_id}: {exc.message}"
         return f"{text}（{hint}）" if hint else text
-    if isinstance(exc, TimeoutError):
+    if isinstance(exc, _ProtocolError):
+        return f"TS3 查询失败: 协议异常 {exc}"
+    if isinstance(exc, (asyncio.TimeoutError, TimeoutError)):
         return "TS3 查询失败: 超时（总时限内未完成连接或响应）"
     if isinstance(exc, (OSError, EOFError)):
         return f"TS3 查询失败: 网络错误 {type(exc).__name__}: {exc}"
     return f"TS3 查询失败: {type(exc).__name__}: {exc}"
 
 
-def _parse_client_list(entries: list[dict[str, str]]) -> list[ClientInfo]:
-    """把 clientlist 响应解析成 ClientInfo 列表（只保留真实客户端）。"""
+def _parse_client_list(records: list[dict[str, str]]) -> list[ClientInfo]:
+    """把 clientlist 记录解析成 ClientInfo 列表（只保留真实客户端）。
+
+    真实 TS3 的 clientlist 一定包含本查询连接（client_type=1），所以空响应或
+    任意一条记录缺少 clid 都说明响应损坏/错位，必须报协议错误：否则会把
+    空名单当成合法 roster，让上层误判为“全员离开”。
+    """
+    if not records:
+        raise _ProtocolError("clientlist 响应为空，连接可能已错位")
+    if not all("clid" in record for record in records):
+        raise _ProtocolError("clientlist 响应含缺少 clid 的记录，连接可能已错位")
     clients: list[ClientInfo] = []
-    for entry in entries:
-        client_type = _to_int(
-            entry.get("client_type"), CLIENT_TYPE_REGULAR
-        )
+    for entry in records:
+        client_type = _to_int(entry.get("client_type"), CLIENT_TYPE_REGULAR)
         if client_type != CLIENT_TYPE_REGULAR:
             continue
         try:
@@ -188,168 +218,208 @@ def _parse_client_list(entries: list[dict[str, str]]) -> list[ClientInfo]:
     return clients
 
 
-# -------- 底层同步 ts3 客户端（线程池内执行） --------
+def _connection_target(server: ServerConfig) -> tuple[Any, ...]:
+    return (
+        server.host,
+        server.query_port,
+        server.query_user,
+        server.query_password,
+        server.virtual_server_id,
+    )
 
 
-class _SyncTS3Client:
-    """同步 TS3 ServerQuery 客户端（持久连接，只在专用线程池内调用）。
+# -------- 底层持久连接 --------
 
-    由 ``LocalStatusClient`` 按 ``server.key`` 缓存复用。``lock`` 保证同一
-    连接上的操作（含 close 时的 quit）不会并发进入 socket；连接建立、查询
-    与退出都在该锁内完成。
-    """
+
+class _TS3Connection:
+    """一条持久 TS3 ServerQuery 连接（纯 asyncio，仅事件循环内使用）。"""
 
     def __init__(
-        self, server: ServerConfig, timeout: float = DEFAULT_NETWORK_TIMEOUT
+        self,
+        reader: asyncio.StreamReader,
+        writer: asyncio.StreamWriter,
+        target: tuple[Any, ...],
     ) -> None:
-        self.timeout = timeout
-        self.lock = threading.Lock()
-        self._connection: Any = None
-        self._deadline = 0.0
-        self._last_used = 0.0
-        self._target: tuple[Any, ...] = ()
-        self.configure(server)
+        self._reader = reader
+        self._writer: asyncio.StreamWriter | None = writer
+        self.target = target
+        self.closed = False
+        self._last_used = time.monotonic()
 
-    def configure(self, server: ServerConfig) -> bool:
-        """同步连接参数；参数变化时丢弃旧连接并返回 True。"""
-        target = (
-            server.host,
-            server.query_port,
-            server.query_user,
-            server.query_password,
-            server.virtual_server_id,
-        )
-        if target == self._target:
-            return False
-        self.quit()
-        (
-            self.host,
-            self.query_port,
-            self.query_user,
-            self.query_password,
-            self.virtual_server_id,
-        ) = target
-        self._target = target
-        return True
+    @classmethod
+    async def open(
+        cls, server: ServerConfig, deadline: float
+    ) -> "_TS3Connection":
+        """在 deadline 内建立连接并完成 greeting / login / use。"""
+        try:
+            reader, writer = await asyncio.wait_for(
+                asyncio.open_connection(
+                    server.host,
+                    server.query_port,
+                    limit=_STREAM_LIMIT,
+                ),
+                timeout=_remaining(deadline),
+            )
+        except (asyncio.TimeoutError, TimeoutError) as exc:
+            raise TimeoutError("连接 TS3 ServerQuery 超时") from exc
 
-    def is_connected(self) -> bool:
-        connection = self._connection
-        return connection is not None and connection.is_connected()
+        connection = cls(reader, writer, _connection_target(server))
+        try:
+            await connection._read_greeting(deadline)
+            await connection.query(
+                "login",
+                common_parameters={
+                    "client_login_name": server.query_user,
+                    "client_login_password": server.query_password,
+                },
+                deadline=deadline,
+            )
+            await connection.query(
+                "use",
+                common_parameters={"sid": server.virtual_server_id},
+                deadline=deadline,
+            )
+        except BaseException:
+            await connection.close()
+            raise
+        connection._last_used = time.monotonic()
+        return connection
 
     def idle_seconds(self) -> float:
         return time.monotonic() - self._last_used
 
-    def begin_attempt(self, deadline: float) -> None:
-        """开始一次查询尝试：刷新本次尝试的总 deadline（复用连接时同样需要）。"""
-        self._deadline = deadline
-
-    def connect(self, deadline: float) -> None:
-        """在给定 deadline 内建立连接并完成 login / use；失败时关闭连接。"""
-        connection_cls = _load_ts3()
-        self.quit()
-        self.begin_attempt(deadline)
-        connection = connection_cls()
-        self._connection = connection
+    async def _read_line(self, deadline: float) -> bytes:
+        """读取一行（不含 ``\\n\\r``），超时/断连会标记连接失效。"""
         try:
-            connection.open(
-                self.host,
-                self.query_port,
-                timeout=self.timeout,
-                deadline=deadline,
+            timeout = _remaining(deadline)
+        except TimeoutError:
+            self.closed = True
+            raise
+        try:
+            raw = await asyncio.wait_for(
+                self._reader.readuntil(_LINE_ENDING),
+                timeout=timeout,
             )
-            # 不用库的 login()/use() 便捷方法：它们调用 send() 时 timeout=None，
-            # 在防洪或网络黑洞下可能永久阻塞。
-            self._send(
-                "login",
-                common_parameters={
-                    "client_login_name": self.query_user,
-                    "client_login_password": self.query_password,
-                },
-            )
-            self._send(
-                "use",
-                common_parameters={"sid": self.virtual_server_id},
-            )
-        except BaseException:
-            self.quit()
+        except asyncio.IncompleteReadError as exc:
+            self.closed = True
+            raise ConnectionError("TS3 服务端关闭了连接") from exc
+        except asyncio.LimitOverrunError as exc:
+            self.closed = True
+            raise _ProtocolError("TS3 响应行过长") from exc
+        except (asyncio.TimeoutError, TimeoutError) as exc:
+            self.closed = True
+            raise TimeoutError("等待 TS3 响应超时") from exc
+        except OSError:
+            self.closed = True
+            raise
+        return raw[: -len(_LINE_ENDING)]
+
+    async def _write(self, data: bytes, deadline: float) -> None:
+        writer = self._writer
+        if self.closed or writer is None:
+            raise ConnectionError("TS3 连接已关闭")
+        try:
+            timeout = _remaining(deadline)
+        except TimeoutError:
+            self.closed = True
+            raise
+        try:
+            writer.write(data)
+            await asyncio.wait_for(writer.drain(), timeout=timeout)
+        except (asyncio.TimeoutError, TimeoutError) as exc:
+            self.closed = True
+            raise TimeoutError("发送 TS3 查询超时") from exc
+        except OSError:
+            self.closed = True
             raise
 
-    def _send(
+    async def _read_greeting(self, deadline: float) -> None:
+        first = await self._read_line(deadline)
+        if first.strip() != b"TS3":
+            raise _ProtocolError("TS3 欢迎信息不正确")
+        second = await self._read_line(deadline)
+        if b"Welcome" not in second:
+            raise _ProtocolError("TS3 欢迎信息缺少 Welcome")
+
+    async def _read_response(self, deadline: float) -> list[dict[str, str]]:
+        """读到 ``error `` 行为止，返回其前面的数据记录。"""
+        data_lines: list[str] = []
+        buffered = 0
+        while True:
+            line = await self._read_line(deadline)
+            text = line.decode("utf-8", "replace").strip()
+            if not text:
+                continue
+            if text.startswith("notify"):
+                # 未订阅事件时不应出现；出现则防御性忽略。
+                continue
+            if text.startswith(_ERROR_PREFIX):
+                fields = _parse_item(text)
+                raw_id = fields.get("id")
+                try:
+                    error_id = int(raw_id)  # type: ignore[arg-type]
+                except (TypeError, ValueError) as exc:
+                    # error 行本身损坏：重连也无济于事，标记为不可重试。
+                    raise _ProtocolError(
+                        f"TS3 error 行缺少合法 id: {text}",
+                        retryable=False,
+                    ) from exc
+                if error_id != 0:
+                    raise _QueryError(error_id, fields.get("msg", "unknown"))
+                return _parse_records(data_lines)
+            data_lines.append(text)
+            buffered += len(text)
+            if buffered > _MAX_RESPONSE_BYTES:
+                self.closed = True
+                raise _ProtocolError("TS3 响应数据过大")
+
+    async def query(
         self,
         command: str,
         common_parameters: dict[str, Any] | None = None,
-    ) -> Any:
-        if not self.is_connected():
-            raise ConnectionError("TS3 连接已断开")
-        resp = self._connection.send(
-            command,
-            common_parameters=common_parameters,
-            timeout=_remaining(self._deadline),
-        )
+        *,
+        deadline: float,
+    ) -> list[dict[str, str]]:
+        """执行一条命令并返回数据记录；非 0 error id 抛 ``_QueryError``。"""
+        await self._write(_build_command(command, common_parameters), deadline)
+        records = await self._read_response(deadline)
         self._last_used = time.monotonic()
-        return resp
+        return records
 
-    def send_keepalive(self) -> None:
-        """发送空查询保活，并在短超时内消费服务端响应。
-
-        py-ts3 的 ``send_keepalive`` 不把空查询计入 ``_num_pending_queries``，
-        若服务端回了 ``error`` 行又被 ``_recv`` 读到，计数会变成 -1，导致后续
-        查询断言失败。这里显式读掉该响应并把计数复位，保证连接可继续复用。
-        """
-        if not self.is_connected():
-            raise ConnectionError("TS3 连接已断开")
-        drain_timeout = min(_remaining(self._deadline), _KEEPALIVE_DRAIN_TIMEOUT)
-        connection = self._connection
-        connection.send_keepalive()
-        try:
-            connection._recv(timeout=drain_timeout)
-        except Exception:
-            # 部分服务端不响应空查询（或回包超时）；没有待处理响应，连接仍可复用。
-            pass
-        finally:
-            connection._num_pending_queries = 0
-        self._last_used = time.monotonic()
-
-    def quit(self) -> None:
-        connection = self._connection
-        self._connection = None
-        if connection is None:
-            return
-        try:
-            connection.quit()
-        except Exception:
-            pass
-
-    def fetch_server_info(self) -> dict[str, str] | None:
-        """serverinfo 是权威数据；失败直接抛异常，由上层判定离线或重连。"""
-        resp = self._send("serverinfo")
-        if not resp.parsed:
-            return None
-        info = resp.parsed[0]
-        # 响应错位（读到别的命令的数据）时字段对不上，按失败处理并重连。
+    async def fetch_server_info(self, deadline: float) -> dict[str, str]:
+        """serverinfo 是权威数据；支持多行响应，缺关键字段按协议错位处理。"""
+        records = await self.query("serverinfo", deadline=deadline)
+        if not records:
+            raise _ProtocolError("serverinfo 响应为空")
+        # 某些服务端/代理会把一条 serverinfo 拆成多行返回，逐条合并后再校验。
+        info: dict[str, str] = {}
+        for record in records:
+            info.update(record)
         if "virtualserver_name" not in info:
-            return None
+            raise _ProtocolError("serverinfo 响应缺少 virtualserver_name")
         return info
 
-    def fetch_client_list(self) -> tuple[list[ClientInfo], str | None]:
-        """拉取在线名单；失败时返回空名单和归类后的错误描述，不抛异常。
+    async def fetch_client_list(self, deadline: float) -> list[ClientInfo]:
+        records = await self.query("clientlist", deadline=deadline)
+        return _parse_client_list(records)
 
-        TS3QueryError（如缺少 clientlist 权限）不影响连接，继续复用；
-        超时/网络错误会让协议状态不可信，此时丢弃连接，下一轮重新建立。
-        """
+    async def close(self) -> None:
+        """尽力关闭连接，最多等待 ``_CLOSE_TIMEOUT`` 秒；可重复调用。"""
+        self.closed = True
+        writer = self._writer
+        self._writer = None
+        if writer is None:
+            return
         try:
-            resp = self._send("clientlist")
-        except Exception as exc:
-            error = _describe_error(exc)
-            if isinstance(exc, TimeoutError) or not self.is_connected():
-                self.quit()
-            return [], error
-        entries = resp.parsed or []
-        if entries and not any("clid" in entry for entry in entries):
-            # 有数据行却没有一个 clid：读到的是上一条响应，协议已错位。
-            self.quit()
-            return [], "TS3 查询失败: clientlist 响应错位，已丢弃连接"
-        return _parse_client_list(entries), None
+            writer.close()
+        except Exception:  # noqa: BLE001 - 关闭失败无需上抛
+            pass
+        try:
+            await asyncio.wait_for(writer.wait_closed(), timeout=_CLOSE_TIMEOUT)
+        except (asyncio.TimeoutError, TimeoutError):
+            pass
+        except Exception:  # noqa: BLE001 - 连接可能已被对端重置
+            pass
 
 
 class _FetchOutcome(NamedTuple):
@@ -365,204 +435,205 @@ class _FetchOutcome(NamedTuple):
 class LocalStatusClient:
     """异步 TS3 ServerQuery 客户端（每台服务器复用一条持久连接）。
 
-    每个实例持有专属线程池，同步 ts3 调用通过 ``loop.run_in_executor`` 执行；
-    单次查询由工作线程内的总 deadline 兜底，外层再用 ``wait_for`` 防止下界：
-    即使工作线程卡在不可中断的系统调用，协程也会按时返回。同一 server.key
-    用一把 ``asyncio.Lock`` 串行化，避免并发调用同时操作一条 socket。
+    连接按 ``server.key`` 缓存，同一 key 用一把 ``asyncio.Lock`` 串行化，
+    不同服务器可并发。每次尝试（含重连后的第二次尝试）各自使用新的总
+    deadline，因此最坏耗时约为 ``2 * timeout``。
     """
 
     def __init__(self, timeout: float = DEFAULT_NETWORK_TIMEOUT) -> None:
         self.timeout = timeout
-        self._executor = ThreadPoolExecutor(
-            max_workers=_EXECUTOR_MAX_WORKERS,
-            thread_name_prefix="ts3-query",
-        )
         self._closed = False
-        self._sync_clients: dict[str, _SyncTS3Client] = {}
-        self._server_locks: dict[str, asyncio.Lock] = {}
-        # 每个 server.key 最近一次提交给线程池的查询，用于避免超时后旧线程
-        # 仍在收尾时又开新线程操作同一条连接。
-        self._inflight: dict[str, asyncio.Future] = {}
+        self._connections: dict[str, _TS3Connection] = {}
+        self._locks: dict[str, asyncio.Lock] = {}
+        # 已提示过 clientlist 不可用的 server.key：每个失败周期只 warning 一次，
+        # 名单恢复后移除，避免每轮轮询重复刷日志（main.py 另有整段状态提示）。
+        self._roster_warned: set[str] = set()
 
-    # ---- 线程池工作函数 ----
+    def _lock_for(self, key: str) -> asyncio.Lock:
+        lock = self._locks.get(key)
+        if lock is None:
+            lock = asyncio.Lock()
+            self._locks[key] = lock
+        return lock
 
-    def _get_sync_client(self, server: ServerConfig) -> _SyncTS3Client:
-        client = self._sync_clients.get(server.key)
-        if client is None:
-            client = _SyncTS3Client(server, timeout=self.timeout)
-            self._sync_clients[server.key] = client
-        return client
+    async def _drop_connection(self, key: str) -> None:
+        connection = self._connections.pop(key, None)
+        if connection is not None:
+            await connection.close()
 
-    def _forget_inflight(
-        self, key: str, future: asyncio.Future
-    ) -> None:
-        if self._inflight.get(key) is future:
-            del self._inflight[key]
-        if not future.cancelled():
-            # 消费异常，避免 asyncio 对"超时后才完成"的 future 打印
-            # "Future exception was never retrieved"。
-            future.exception()
+    async def _open_and_cache(
+        self, server: ServerConfig, deadline: float
+    ) -> _TS3Connection:
+        connection = await _TS3Connection.open(server, deadline)
+        if self._closed:
+            # close() 与建连并发：立即关掉，避免留下无人管理的 socket。
+            await connection.close()
+            raise ConnectionError("TS3 客户端已关闭")
+        self._connections[server.key] = connection
+        return connection
 
-    def _fetch_status_sync(
-        self, server: ServerConfig, client: _SyncTS3Client
+    async def _fetch_once(
+        self, server: ServerConfig
     ) -> _FetchOutcome | None:
-        """线程池内完成一次拉取：复用连接、失败重连一次并构造快照。"""
-        with client.lock:
-            if self._closed:
-                return None
-            if client.configure(server):
-                logger.debug(
-                    f"[{server.server_name}] 服务器连接参数变化，重建 TS3 查询连接"
-                )
+        """一次拉取：复用连接、失败重连一次、clientlist 降级。"""
+        key = server.key
+        connection = self._connections.get(key)
+        if connection is not None and (
+            connection.target != _connection_target(server) or connection.closed
+        ):
+            # 配置变化或连接已断开：丢弃旧连接，本轮按新建连接处理。
+            await self._drop_connection(key)
+            connection = None
 
-            reused = False
-            connected = False
-            try:
-                # 每次尝试都刷新 deadline：复用连接时也要重新计时，否则空闲
-                # 超过 timeout 后保活/serverinfo 会直接判超时。
-                attempt_deadline = time.monotonic() + self.timeout
-                client.begin_attempt(attempt_deadline)
-                if client.is_connected():
-                    reused = True
-                    logger.debug(f"[{server.server_name}] 复用 TS3 查询连接")
-                    idle = client.idle_seconds()
-                    if idle > IDLE_KEEPALIVE_SECONDS:
-                        logger.debug(
-                            f"[{server.server_name}] 连接空闲 {idle:.0f}s，"
-                            f"发送 keepalive"
-                        )
-                        client.send_keepalive()
-                else:
-                    client.connect(attempt_deadline)
-                    connected = True
-                    logger.debug(f"[{server.server_name}] 建立 TS3 查询连接")
-                info = client.fetch_server_info()
-                if not info:
-                    raise RuntimeError("serverinfo 返回空数据")
-            except BaseException as first_exc:
-                if self._closed:
-                    # close() 正在关闭：放弃重连，尽快让出线程与连接。
-                    client.quit()
-                    return None
-                if not reused and not connected:
-                    # 本次尝试连连接都没建起来：直接判离线，不再重试。
-                    client.quit()
-                    raise
+        reused = connection is not None
+        connected = False
+        deadline = time.monotonic() + self.timeout
+        active_deadline = deadline
+        try:
+            if connection is None:
+                connection = await self._open_and_cache(server, deadline)
+                connected = True
+                logger.debug(f"[{server.server_name}] 建立 TS3 查询连接")
+            else:
+                logger.debug(f"[{server.server_name}] 复用 TS3 查询连接")
+                if connection.idle_seconds() > IDLE_KEEPALIVE_SECONDS:
+                    logger.debug(
+                        f"[{server.server_name}] 连接空闲 "
+                        f"{connection.idle_seconds():.0f}s，发送 keepalive"
+                    )
+                    await connection.query(
+                        "version",
+                        deadline=min(
+                            deadline,
+                            time.monotonic() + _KEEPALIVE_TIMEOUT,
+                        ),
+                    )
+            info = await connection.fetch_server_info(active_deadline)
+        except asyncio.CancelledError:
+            await self._drop_connection(key)
+            raise
+        except Exception as first_exc:
+            if self._closed:
+                await self._drop_connection(key)
+                return None
+            if not reused and not connected:
+                # 纯连接/认证失败：重试只会再失败一次，直接判离线。
+                await self._drop_connection(key)
+                raise
+            if isinstance(first_exc, _QueryError):
+                # 服务端拒绝查询（如防洪 524）：连接仍是对齐的，重连只会再次
+                # 登录、加剧防洪，故保留连接，由 fetch_status 记录并判离线。
                 logger.debug(
-                    f"[{server.server_name}] TS3 连接失效，重连一次: "
+                    f"[{server.server_name}] 服务端拒绝查询，保留连接: "
                     f"{_describe_error(first_exc)}"
                 )
-                client.quit()
-                try:
-                    client.connect(time.monotonic() + self.timeout)
-                    info = client.fetch_server_info()
-                except BaseException:
-                    client.quit()
-                    raise
-                if not info:
-                    client.quit()
-                    raise RuntimeError("serverinfo 返回空数据")
-                logger.debug(f"[{server.server_name}] TS3 连接重连成功")
-
-            clients, roster_error = client.fetch_client_list()
-
-            if roster_error is None:
-                clients_online = len(clients)
-            else:
-                # clientlist 不可用时回退 serverinfo；该计数含 ServerQuery 自身连接。
-                clients_online = max(
-                    0, _to_int(info.get("virtualserver_clientsonline")) - 1
-                )
-
-            snapshot = ServerSnapshot(
-                key=server.key,
-                name=server.server_name,
-                host=server.host,
-                query_port=server.query_port,
-                voice_port=_to_int(info.get("virtualserver_port")),
-                status="online",
-                platform=str(info.get("virtualserver_platform") or "Unknown"),
-                version=str(info.get("virtualserver_version") or "Unknown"),
-                clients_online=clients_online,
-                max_clients=_to_int(info.get("virtualserver_maxclients")),
-                channels_online=_to_int(info.get("virtualserver_channelsonline")),
-                uptime=_to_int(info.get("virtualserver_uptime")),
-                clients=clients,
-                roster_ok=roster_error is None,
-                update_time=_now_text(),
+                raise
+            if isinstance(first_exc, _ProtocolError) and not first_exc.retryable:
+                # error 行本身损坏：连接不可信，丢弃但不在本轮重连。
+                await self._drop_connection(key)
+                raise
+            logger.debug(
+                f"[{server.server_name}] TS3 连接失效，重连一次: "
+                f"{_describe_error(first_exc)}"
             )
-            return _FetchOutcome(snapshot=snapshot, roster_error=roster_error)
-
-    def _close_all_sync(self) -> None:
-        """线程池内退出并丢弃所有缓存连接（close() 调用）。
-
-        关闭时不无限等待正在查询的工作线程：最多等 1 秒锁，拿不到就直接
-        并发 quit，让阻塞中的 socket 读尽快失败退出。这样插件卸载不会被
-        一台挂起服务器拖住几十秒。
-        """
-        clients = list(self._sync_clients.values())
-        self._sync_clients.clear()
-        for client in clients:
-            acquired = client.lock.acquire(timeout=1.0)
+            await self._drop_connection(key)
+            active_deadline = time.monotonic() + self.timeout
             try:
-                client.quit()
-            finally:
-                if acquired:
-                    client.lock.release()
+                connection = await self._open_and_cache(
+                    server, active_deadline
+                )
+                info = await connection.fetch_server_info(active_deadline)
+            except asyncio.CancelledError:
+                await self._drop_connection(key)
+                raise
+            except Exception:
+                await self._drop_connection(key)
+                raise
+            logger.debug(f"[{server.server_name}] TS3 连接重连成功")
 
-    # ---- 异步接口 ----
+        roster_error: str | None = None
+        clients: list[ClientInfo] = []
+        try:
+            clients = await connection.fetch_client_list(active_deadline)
+        except asyncio.CancelledError:
+            await self._drop_connection(key)
+            raise
+        except _QueryError as exc:
+            # 查询级错误（如 2568 权限不足）不影响连接，继续复用。
+            roster_error = _describe_error(exc)
+        except Exception as exc:
+            # 网络/超时/协议错误：连接状态不可信，本轮降级并丢弃连接。
+            roster_error = _describe_error(exc)
+            await self._drop_connection(key)
+
+        if self._closed:
+            await self._drop_connection(key)
+            return None
+
+        if roster_error is None:
+            clients_online = len(clients)
+        else:
+            # clientlist 不可用时回退 serverinfo。注意该计数含所有 ServerQuery
+            # 连接（不只是一个），有多个查询客户端时会高估在线人数；没有名单
+            # 就无法区分，这里只保证是保守的上界估算（减 1 仅覆盖本连接）。
+            clients_online = max(
+                0, _to_int(info.get("virtualserver_clientsonline")) - 1
+            )
+
+        snapshot = ServerSnapshot(
+            key=server.key,
+            name=server.server_name,
+            host=server.host,
+            query_port=server.query_port,
+            voice_port=_to_int(info.get("virtualserver_port")),
+            status="online",
+            platform=str(info.get("virtualserver_platform") or "Unknown"),
+            version=str(info.get("virtualserver_version") or "Unknown"),
+            clients_online=clients_online,
+            max_clients=_to_int(info.get("virtualserver_maxclients")),
+            channels_online=_to_int(info.get("virtualserver_channelsonline")),
+            uptime=_to_int(info.get("virtualserver_uptime")),
+            clients=clients,
+            roster_ok=roster_error is None,
+            update_time=_now_text(),
+        )
+        return _FetchOutcome(snapshot=snapshot, roster_error=roster_error)
+
+    # ---- 公开异步接口 ----
 
     async def fetch_status(
         self, server: ServerConfig, source: str
     ) -> ServerSnapshot | None:
-        """拉取一台 TS3 服务器的状态；失败或超时返回 None。
+        """拉取一台 TS3 服务器的状态；失败或超时返回 None，从不抛异常。
 
         返回 None 时由上层（main.py）构造 offline 快照继续轮询。
         """
         if self._closed:
             return None
 
-        loop = asyncio.get_running_loop()
-        lock = self._server_locks.setdefault(server.key, asyncio.Lock())
+        lock = self._lock_for(server.key)
         async with lock:
             if self._closed:
                 return None
-
-            pending = self._inflight.get(server.key)
-            if pending is not None and not pending.done():
-                # 上一轮查询已超时但工作线程还没收尾：本轮跳过，避免两个线程
-                # 同时操作同一条连接。
-                logger.debug(
-                    f"[{source}] [{server.server_name}] 上一轮查询仍在收尾，"
-                    f"跳过本轮"
-                )
-                return None
-
-            client = self._get_sync_client(server)
-            future = loop.run_in_executor(
-                self._executor, self._fetch_status_sync, server, client
-            )
-            self._inflight[server.key] = future
-            future.add_done_callback(
-                partial(self._forget_inflight, server.key)
-            )
             try:
-                # 每次尝试最多 self.timeout；重连一次，故总预算约 2*timeout。
                 outcome = await asyncio.wait_for(
-                    asyncio.shield(future),
-                    timeout=2 * (self.timeout + _WAIT_FOR_GRACE),
+                    self._fetch_once(server),
+                    timeout=2 * self.timeout + _WAIT_FOR_GRACE,
                 )
             except asyncio.CancelledError:
-                if self._closed:
-                    return None
                 raise
             except (asyncio.TimeoutError, TimeoutError):
+                if self._closed:
+                    return None
                 logger.warning(
-                    f"[{source}] [{server.server_name}] TS3 查询超时 "
-                    f"({self.timeout:.0f}s)，已跳过本轮"
+                    f"[{source}] [{server.server_name}] "
+                    f"TS3 查询超时（已按总时限放弃），已跳过本轮"
                 )
+                await self._drop_connection(server.key)
                 return None
             except Exception as exc:
+                if self._closed:
+                    return None
                 logger.warning(
                     f"[{source}] [{server.server_name}] {_describe_error(exc)}"
                 )
@@ -572,26 +643,41 @@ class LocalStatusClient:
             return None
 
         if outcome.roster_error is not None:
-            logger.warning(
-                f"[{source}] [{server.server_name}] clientlist 查询失败，"
-                f"本轮在线名单不可用，人数回退 serverinfo: "
-                f"{outcome.roster_error}"
-            )
+            if server.key in self._roster_warned:
+                logger.debug(
+                    f"[{source}] [{server.server_name}] clientlist 仍不可用: "
+                    f"{outcome.roster_error}"
+                )
+            else:
+                self._roster_warned.add(server.key)
+                logger.warning(
+                    f"[{source}] [{server.server_name}] clientlist 查询失败，"
+                    f"本轮在线名单不可用，人数回退 serverinfo: "
+                    f"{outcome.roster_error}"
+                )
+        else:
+            self._roster_warned.discard(server.key)
         return outcome.snapshot
 
     async def close(self) -> None:
-        """关闭客户端：先退出所有缓存连接，再关闭线程池；可重复调用。
-
-        使用独立线程执行 quit（不复用本客户端的查询线程池），避免查询线程
-        全部挂起时 close 还要排队；整体耗时上限约为 ``连接数 * 1s``。
-        """
+        """关闭客户端：尽力关闭所有缓存连接，最多阻塞约 2 秒；可重复调用。"""
         if self._closed:
             return
         self._closed = True
+        connections = list(self._connections.values())
+        self._connections.clear()
+        if not connections:
+            return
         try:
-            await asyncio.to_thread(self._close_all_sync)
-        finally:
-            self._executor.shutdown(wait=False, cancel_futures=True)
+            await asyncio.wait_for(
+                asyncio.gather(
+                    *(connection.close() for connection in connections),
+                    return_exceptions=True,
+                ),
+                timeout=_CLOSE_ALL_TIMEOUT,
+            )
+        except (asyncio.TimeoutError, TimeoutError):
+            pass
 
 
 def build_status_client() -> LocalStatusClient:

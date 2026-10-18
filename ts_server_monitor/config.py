@@ -19,7 +19,6 @@ from .constants import (
 )
 from .models import DisplayOptions, PluginSettings, ServerConfig
 
-
 DISPLAY_DEFAULTS = DisplayOptions()
 
 

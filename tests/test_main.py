@@ -7,7 +7,6 @@ import unittest
 from unittest import mock
 
 import _support  # noqa: F401
-
 from astrbot_plugin_ts3_server_guard import main as plugin_module
 from astrbot_plugin_ts3_server_guard.ts_server_monitor.models import (
     DisplayOptions,
